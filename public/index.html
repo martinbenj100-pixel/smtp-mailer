@@ -1,0 +1,1749 @@
+
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
+<title>SMTP Mailer</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --bg:#0a0e1a;--surf:#111827;--bord:#1e2d45;
+    --cyan:#00d4ff;--cyand:#004d5e;--orange:#ff6b35;
+    --green:#00ff88;--red:#ff3b5c;--muted:#4a5568;
+    --text:#e2e8f0;--dim:#8892a4;--purple:#a855f7;
+  }
+  body{background:var(--bg);color:var(--text);font-family:'Inter',system-ui,sans-serif;
+    min-height:100vh;display:flex;flex-direction:column}
+  ::placeholder{color:var(--muted);opacity:1}
+  ::-webkit-scrollbar{width:4px}
+  ::-webkit-scrollbar-track{background:var(--bg)}
+  ::-webkit-scrollbar-thumb{background:var(--bord);border-radius:2px}
+  input,textarea{
+    background:var(--bg);border:1px solid var(--bord);border-radius:5px;
+    padding:9px 12px;color:var(--text);font-family:monospace;font-size:14px;
+    outline:none;width:100%;transition:border-color .15s;-webkit-appearance:none
+  }
+  input:focus,textarea:focus{border-color:var(--cyan)}
+  textarea{resize:vertical;min-height:80px}
+  input[type=checkbox]{width:18px;height:18px;accent-color:var(--cyan);cursor:pointer}
+  input[type=range]{accent-color:var(--cyan);padding:0;width:100%;height:20px}
+  .lbl{display:block;font-size:10px;font-family:monospace;color:var(--cyan);
+    text-transform:uppercase;letter-spacing:.1em;margin-bottom:5px}
+  .field{margin-bottom:14px}
+  .hint{font-size:11px;font-family:monospace;color:var(--muted);margin-top:4px;line-height:1.5}
+  .btn{padding:10px 16px;border-radius:6px;font-family:monospace;font-size:12px;
+    font-weight:700;letter-spacing:.08em;text-transform:uppercase;
+    cursor:pointer;transition:all .15s;border:1px solid;
+    -webkit-tap-highlight-color:transparent}
+  .btn-cyan{border-color:var(--cyan);background:rgba(0,212,255,.12);color:var(--cyan)}
+  .btn-orange{border-color:var(--orange);background:rgba(255,107,53,.12);color:var(--orange)}
+  .btn-green{border-color:var(--green);background:rgba(0,255,136,.12);color:var(--green)}
+  .btn-red{border-color:var(--red);background:rgba(255,59,92,.12);color:var(--red)}
+  .btn-muted{border-color:var(--bord);background:transparent;color:var(--muted)}
+  .btn-purple{border-color:var(--purple);background:rgba(168,85,247,.12);color:var(--purple)}
+  .btn:disabled{opacity:.4;cursor:not-allowed}
+  .btn-full{width:100%;padding:13px;font-size:13px}
+  .chip{padding:6px 10px;border-radius:4px;font-family:monospace;font-size:12px;
+    border:1px solid var(--bord);background:transparent;color:var(--dim);cursor:pointer;
+    -webkit-tap-highlight-color:transparent}
+  .chip.active{border-color:var(--cyan);background:rgba(0,212,255,.12);color:var(--cyan)}
+  .chip-orange.active{border-color:var(--orange);background:rgba(255,107,53,.12);color:var(--orange)}
+  .box{border-radius:6px;border:1px solid var(--bord);background:var(--surf);padding:14px}
+  .warn-box{border-radius:6px;border:1px solid rgba(255,107,53,.4);
+    background:rgba(255,107,53,.08);padding:12px;
+    font-family:monospace;font-size:12px;color:var(--orange);line-height:1.6}
+  .info-box{border-radius:6px;border:1px solid rgba(0,212,255,.2);
+    background:rgba(0,212,255,.06);padding:12px;
+    font-family:monospace;font-size:12px;color:var(--dim);line-height:1.6}
+  .divider{height:1px;background:var(--bord);margin:16px 0}
+  .row{display:flex;gap:8px;align-items:center}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+  .pulse{animation:pulse 1s infinite}
+  .mode-toggle{display:flex;background:var(--bg);border:1px solid var(--bord);
+    border-radius:6px;padding:3px;margin-bottom:18px}
+  .mode-btn{flex:1;padding:10px;border:none;border-radius:4px;font-family:monospace;
+    font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
+    cursor:pointer;transition:all .2s;background:transparent;color:var(--muted);
+    -webkit-tap-highlight-color:transparent}
+  .mode-btn.active-smtp{background:rgba(0,212,255,.15);color:var(--cyan)}
+  .mode-btn.active-resend{background:rgba(168,85,247,.15);color:var(--purple)}
+  .profile-card{display:flex;align-items:center;gap:10px;padding:12px 14px;
+    border-radius:6px;border:1px solid var(--bord);background:var(--surf);
+    margin-bottom:8px;transition:border-color .15s}
+  .profile-card.active-profile{border-color:var(--cyan);background:rgba(0,212,255,.05)}
+  .profile-icon{width:32px;height:32px;border-radius:6px;display:flex;
+    align-items:center;justify-content:center;font-size:15px;flex-shrink:0}
+
+  /* LAYOUT */
+  #main{display:flex;flex:1}
+
+  /* DESKTOP */
+  @media(min-width:768px){
+    body{height:100vh;overflow:hidden}
+    #left-panel{
+      width:420px;min-width:340px;border-right:1px solid var(--bord);
+      display:flex;flex-direction:column;overflow:hidden;
+      flex-shrink:0;height:calc(100vh - 57px)
+    }
+    #right-panel{
+      flex:1;display:flex;flex-direction:column;
+      overflow:hidden;height:calc(100vh - 57px)
+    }
+    #scroll-area{
+      flex:1;overflow-y:scroll;padding:18px;
+      height:0;min-height:0
+    }
+    #console{
+      flex:1;overflow-y:scroll;padding:18px;
+      background:var(--bg);height:0;min-height:0
+    }
+    #send-area{flex-shrink:0}
+  }
+
+  /* MOBILE */
+  @media(max-width:767px){
+    #main{flex-direction:column}
+    #left-panel{width:100%;display:flex;flex-direction:column}
+    #right-panel{width:100%;min-height:280px;display:flex;flex-direction:column}
+    #scroll-area{padding:14px}
+    #console{padding:14px;background:var(--bg);min-height:220px;
+      overflow-y:auto;max-height:350px}
+    #send-area{position:sticky;bottom:0;z-index:10}
+  }
+</style>
+</head>
+<body>
+
+<div style="border-bottom:1px solid var(--bord);padding:12px 16px;
+  display:flex;align-items:center;justify-content:space-between;
+  background:var(--surf);flex-shrink:0;position:sticky;top:0;z-index:20">
+  <div style="display:flex;align-items:center;gap:10px">
+    <div style="width:32px;height:32px;border-radius:6px;background:var(--cyand);
+      border:1px solid rgba(0,212,255,.3);display:flex;align-items:center;
+      justify-content:center;font-size:16px;flex-shrink:0">✉</div>
+    <div>
+      <div style="font-family:monospace;font-weight:700;font-size:13px;
+        color:var(--cyan);letter-spacing:.05em">SMTP MAILER</div>
+      <div style="font-size:10px;color:var(--muted);font-family:monospace">bulk relay console</div>
+    </div>
+  </div>
+  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end">
+    <span id="bg-badge" style="display:none;font-family:monospace;font-size:10px;
+      color:var(--green);background:rgba(0,255,136,.08);
+      border:1px solid rgba(0,255,136,.3);padding:3px 8px;border-radius:4px">⚡ BG</span>
+    <span id="mode-badge" style="font-family:monospace;font-size:10px;padding:3px 8px;
+      border-radius:4px;border:1px solid rgba(0,212,255,.3);
+      background:rgba(0,212,255,.08);color:var(--cyan)">SMTP</span>
+    <span id="validated-badge" style="display:none;font-family:monospace;font-size:10px;
+      color:var(--green);background:rgba(0,255,136,.08);
+      border:1px solid rgba(0,255,136,.3);padding:3px 8px;border-radius:4px">✓ OK</span>
+    <span style="display:inline-flex;align-items:center;gap:5px;font-size:11px;
+      font-family:monospace;text-transform:uppercase;letter-spacing:.1em">
+      <span id="badge-dot" style="width:6px;height:6px;border-radius:50%;
+        background:var(--muted);flex-shrink:0"></span>
+      <span id="badge-text" style="color:var(--muted)">IDLE</span>
+    </span>
+    <button id="disconnect-btn" onclick="disconnect()" style="display:none;
+      padding:4px 10px;border-radius:4px;border:1px solid rgba(255,59,92,.4);
+      background:rgba(255,59,92,.1);color:var(--red);font-family:monospace;
+      font-size:10px;cursor:pointer">⏏ Déco</button>
+  </div>
+</div>
+
+<div id="main">
+
+  <div id="left-panel">
+
+    <div style="display:flex;background:var(--surf);border-bottom:1px solid var(--bord);flex-shrink:0">
+      <button class="tab-btn active" data-tab="profiles" onclick="switchTab('profiles')"
+        style="flex:1;padding:11px 4px;background:none;border:none;
+        border-bottom:2px solid var(--cyan);color:var(--cyan);font-family:monospace;
+        font-size:10px;text-transform:uppercase;letter-spacing:.06em;cursor:pointer">
+        👤 Profils
+      </button>
+      <button class="tab-btn" data-tab="config" onclick="switchTab('config')"
+        style="flex:1;padding:11px 4px;background:none;border:none;
+        border-bottom:2px solid transparent;color:var(--muted);font-family:monospace;
+        font-size:10px;text-transform:uppercase;letter-spacing:.06em;cursor:pointer">
+        ⚙ Config
+        <span id="config-ok-mark" style="display:none;color:var(--green);font-size:9px">✓</span>
+      </button>
+      <button class="tab-btn" data-tab="list" onclick="switchTab('list')"
+        style="flex:1;padding:11px 4px;background:none;border:none;
+        border-bottom:2px solid transparent;color:var(--muted);font-family:monospace;
+        font-size:10px;text-transform:uppercase;letter-spacing:.06em;cursor:pointer">
+        📋 Liste
+      </button>
+      <button class="tab-btn" data-tab="compose" onclick="switchTab('compose')"
+        style="flex:1;padding:11px 4px;background:none;border:none;
+        border-bottom:2px solid transparent;color:var(--muted);font-family:monospace;
+        font-size:10px;text-transform:uppercase;letter-spacing:.06em;cursor:pointer">
+        ✉ Message
+      </button>
+    </div>
+
+    <div id="scroll-area">
+
+      <div id="tab-profiles">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+          <div style="font-size:10px;font-family:monospace;color:var(--cyan);
+            text-transform:uppercase;letter-spacing:.1em">Connexions sauvegardées</div>
+          <button class="btn btn-cyan" style="padding:6px 12px;font-size:10px"
+            onclick="switchTab('config')">+ Nouveau</button>
+        </div>
+        <div id="profiles-list">
+          <div id="profiles-empty" style="text-align:center;padding:30px 0;
+            color:var(--muted);font-family:monospace;font-size:12px;line-height:1.8">
+            Aucun profil sauvegardé<br/>
+            <span style="color:var(--bord)">Clique sur "+ Nouveau" pour en créer un</span>
+          </div>
+        </div>
+        <div id="profile-test-area" style="display:none;margin-top:16px">
+          <div class="divider"></div>
+          <div class="field">
+            <label class="lbl">Email de test pour le profil sélectionné</label>
+            <input id="profile-test-email" placeholder="ton@email.com"
+              type="email" autocapitalize="none"/>
+          </div>
+          <button class="btn btn-orange btn-full" id="profile-test-btn"
+            onclick="testSelectedProfile()">🧪 Tester ce profil</button>
+          <div id="profile-test-result" style="display:none;margin-top:10px"></div>
+        </div>
+      </div>
+
+      <div id="tab-config" style="display:none">
+        <div class="field">
+          <label class="lbl">Nom du profil</label>
+          <input id="profile-name" placeholder="ex: Gmail Pro / Resend Domain1 / Bluewin"/>
+          <div class="hint">Pour retrouver facilement cette connexion</div>
+        </div>
+        <div class="divider"></div>
+        <div class="mode-toggle">
+          <button class="mode-btn active-smtp" id="mode-smtp-btn"
+            onclick="setMode('smtp')">⚙ SMTP</button>
+          <button class="mode-btn" id="mode-resend-btn"
+            onclick="setMode('resend')">⚡ Resend API</button>
+        </div>
+
+        <div id="smtp-fields">
+          <div class="field">
+            <label class="lbl">Provider</label>
+            <div style="display:flex;flex-wrap:wrap;gap:6px" id="preset-btns">
+              <button class="chip active" onclick="applyPreset('gmail')">gmail</button>
+              <button class="chip" onclick="applyPreset('outlook')">outlook</button>
+              <button class="chip" onclick="applyPreset('yahoo')">yahoo</button>
+              <button class="chip" onclick="applyPreset('bluewin')">bluewin</button>
+              <button class="chip" onclick="applyPreset('custom')">custom</button>
+            </div>
+          </div>
+          <div style="display:flex;gap:10px">
+            <div class="field" style="flex:2">
+              <label class="lbl">Host SMTP</label>
+              <input id="smtp-host" value="smtp.gmail.com" placeholder="smtp.example.com"
+                oninput="configChanged()"/>
+            </div>
+            <div class="field" style="flex:1">
+              <label class="lbl">Port</label>
+              <input id="smtp-port" value="587" placeholder="587"
+                oninput="configChanged()" type="number"/>
+            </div>
+          </div>
+          <div class="field">
+            <label class="lbl">Chiffrement</label>
+            <div style="display:flex;gap:8px">
+              <button id="enc-starttls" class="chip chip-orange active"
+                onclick="setSecure(false)" style="flex:1;padding:10px">STARTTLS</button>
+              <button id="enc-ssl" class="chip chip-orange"
+                onclick="setSecure(true)" style="flex:1;padding:10px">SSL/TLS</button>
+            </div>
+          </div>
+          <div class="field">
+            <label class="lbl">Utilisateur SMTP</label>
+            <input id="smtp-user" placeholder="toi@gmail.com"
+              oninput="configChanged()" type="email" autocapitalize="none"/>
+          </div>
+          <div class="field">
+            <label class="lbl">Mot de passe / App Password</label>
+            <input id="smtp-pass" type="password" placeholder="••••••••••••"
+              oninput="configChanged()"/>
+            <div class="hint">Gmail avec 2FA : génère un App Password</div>
+          </div>
+        </div>
+
+        <div id="resend-fields" style="display:none">
+          <div style="padding:12px;border-radius:6px;background:rgba(168,85,247,.08);
+            border:1px solid rgba(168,85,247,.3);margin-bottom:16px;
+            font-family:monospace;font-size:12px;color:var(--purple);line-height:1.6">
+            ⚡ Resend API — meilleure délivrabilité, moins de spam
+          </div>
+          <div class="field">
+            <label class="lbl">Clé API Resend</label>
+            <input id="resend-key" type="password" placeholder="re_xxxxxxxxxxxxxxxxxx"
+              oninput="configChanged()" autocapitalize="none"/>
+            <div class="hint">Disponible sur resend.com → API Keys</div>
+          </div>
+          <div class="field">
+            <label class="lbl">From Email</label>
+            <input id="resend-from-email" placeholder="toi@tondomaine.com"
+              oninput="configChanged()" type="email" autocapitalize="none"/>
+            <div class="hint">Doit être un domaine vérifié sur Resend</div>
+          </div>
+        </div>
+
+        <div class="field">
+          <label class="lbl">From Name
+            <span style="color:var(--dim);font-size:9px;text-transform:none">(nom d'affichage)</span>
+          </label>
+          <input id="from-name" placeholder="Mon Entreprise / Mon Nom"/>
+          <div class="hint">Apparaît comme : "Mon Nom" &lt;email&gt;</div>
+        </div>
+        <div class="divider"></div>
+
+        <div class="box">
+          <div style="font-size:10px;font-family:monospace;color:var(--cyan);
+            text-transform:uppercase;letter-spacing:.1em;margin-bottom:12px">
+            🧪 Test de connexion
+          </div>
+          <div class="field">
+            <label class="lbl">Adresse email de test</label>
+            <input id="test-email" placeholder="ton@email.com"
+              type="email" autocapitalize="none"/>
+            <div class="hint">Reçois un vrai email pour vérifier réception et spam</div>
+          </div>
+          <button class="btn btn-orange btn-full" id="test-btn" onclick="runTest()">
+            🧪 Envoyer un mail de test
+          </button>
+          <div id="test-result" style="display:none;margin-top:12px"></div>
+        </div>
+        <div id="smtp-warn-box" class="warn-box" style="margin-top:14px">
+          ⚠ Gmail : active l'accès aux apps moins sécurisées ou génère un App Password.
+        </div>
+      </div>
+
+      <div id="tab-list" style="display:none">
+        <div id="list-smtp-warn" class="warn-box" style="display:none;margin-bottom:14px">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            ⚠ Sélectionne ou configure d'abord une connexion
+            <button class="btn btn-muted"
+              style="margin-left:auto;padding:5px 10px;font-size:11px"
+              onclick="switchTab('profiles')">→ Profils</button>
+          </div>
+        </div>
+        <div class="field">
+          <label class="lbl">Ajouter des destinataires</label>
+          <textarea id="bulk-input" rows="4"
+            placeholder="jean@example.com&#10;Marie Dupont <marie@example.com>&#10;bob@test.com"
+            autocapitalize="none" autocorrect="off"></textarea>
+          <div class="hint">1 par ligne · formats : email / Nom &lt;email&gt;</div>
+        </div>
+        <div class="row" style="margin-bottom:18px">
+          <button class="btn btn-cyan" style="flex:1" onclick="parseBulk()">+ Ajouter</button>
+          <button class="btn btn-muted"
+            onclick="document.getElementById('bulk-input').value=''">Effacer</button>
+        </div>
+
+        <div class="box" style="margin-bottom:18px">
+          <div style="font-size:10px;font-family:monospace;color:var(--cyan);
+            text-transform:uppercase;letter-spacing:.1em;margin-bottom:10px">
+            ⏱ Délai entre chaque envoi
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px" id="delay-presets">
+            <button class="chip" onclick="setDelay(1000)">1s</button>
+            <button class="chip active" onclick="setDelay(5000)">5s</button>
+            <button class="chip" onclick="setDelay(15000)">15s</button>
+            <button class="chip" onclick="setDelay(30000)">30s</button>
+            <button class="chip" onclick="setDelay(60000)">1min</button>
+            <button class="chip" onclick="setDelay(120000)">2min</button>
+            <button class="chip" onclick="setDelay(300000)">5min</button>
+          </div>
+          <input type="range" id="delay-slider" min="1000" max="300000"
+            step="1000" value="5000" oninput="onSlider(this.value)"/>
+          <div style="display:flex;justify-content:space-between;font-family:monospace;
+            font-size:11px;color:var(--muted);margin-top:6px">
+            <span>1s</span>
+            <span id="delay-label" style="color:var(--cyan);font-weight:700">5 sec</span>
+            <span>5min</span>
+          </div>
+        </div>
+
+        <div id="list-header" style="display:none;margin-bottom:10px">
+          <div style="display:flex;align-items:center;justify-content:space-between;
+            flex-wrap:wrap;gap:8px">
+            <span id="list-count" style="font-family:monospace;font-size:11px;
+              color:var(--muted);text-transform:uppercase;letter-spacing:.08em"></span>
+            <div style="display:flex;gap:10px">
+              <button style="background:none;border:none;color:var(--muted);
+                font-family:monospace;font-size:11px;cursor:pointer;padding:4px"
+                onclick="toggleAll()">Tout</button>
+              <button style="background:none;border:none;color:var(--muted);
+                font-family:monospace;font-size:11px;cursor:pointer;padding:4px"
+                onclick="clearSent()">- Envoyés</button>
+              <button style="background:none;border:none;color:rgba(255,59,92,.7);
+                font-family:monospace;font-size:11px;cursor:pointer;padding:4px"
+                onclick="clearAll()">Vider</button>
+            </div>
+          </div>
+        </div>
+        <div id="rec-list"></div>
+        <div id="list-empty" style="text-align:center;padding:30px 0;color:var(--muted);
+          font-family:monospace;font-size:13px;line-height:1.8">
+          Colle des adresses ci-dessus<br/>
+          <span style="color:var(--bord)">pour constituer ta liste d'envoi</span>
+        </div>
+      </div>
+
+      <div id="tab-compose" style="display:none">
+        <div id="from-preview" style="display:none;margin-bottom:14px;padding:10px 12px;
+          border-radius:5px;border:1px solid rgba(0,255,136,.2);background:rgba(0,255,136,.05)">
+          <span style="font-family:monospace;font-size:12px;color:var(--green)">From: </span>
+          <span id="from-preview-text" style="font-family:monospace;font-size:12px;color:var(--dim)"></span>
+        </div>
+        <div class="field">
+          <label class="lbl">Sujet</label>
+          <input id="mail-subject" placeholder="Votre sujet ici"/>
+        </div>
+        <div class="field">
+          <label class="lbl">Corps du message</label>
+          <div style="display:flex;gap:6px;margin-bottom:8px">
+            <button id="mode-text" class="chip active" onclick="setHtmlMode(false)">Texte brut</button>
+            <button id="mode-html" class="chip" onclick="setHtmlMode(true)">HTML</button>
+          </div>
+          <textarea id="mail-body" rows="8"
+            placeholder="Bonjour {{name}},&#10;&#10;Ton message ici..."></textarea>
+        </div>
+        <div class="info-box">
+          💡 Utilise <span style="color:var(--cyan)">{{name}}</span> —
+          remplacé par le nom de chaque destinataire.
+        </div>
+      </div>
+
+    </div><div id="send-area" style="padding:14px 16px;border-top:1px solid var(--bord);background:var(--surf)">
+      <div id="progress-bar-wrap" style="display:none;margin-bottom:10px">
+        <div style="display:flex;justify-content:space-between;font-family:monospace;
+          font-size:11px;color:var(--muted);margin-bottom:5px">
+          <span id="prog-fraction">0 / 0</span>
+          <span id="prog-sent" style="color:var(--green)">✓ 0</span>
+          <span id="prog-failed" style="color:var(--red)">✗ 0</span>
+        </div>
+        <div style="height:4px;border-radius:2px;background:var(--bord)">
+          <div id="prog-bar" style="height:100%;border-radius:2px;width:0%;
+            background:linear-gradient(90deg,var(--cyan),var(--green));transition:width .3s"></div>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button id="btn-start" class="btn btn-cyan btn-full"
+          onclick="startSend()">▶ Lancer (0 mails)</button>
+        <button id="btn-pause" class="btn btn-orange"
+          onclick="pauseSend()" style="display:none;padding:13px 14px">⏸</button>
+        <button id="btn-resume" class="btn btn-green"
+          onclick="resumeSend()" style="display:none;padding:13px 14px">▶</button>
+        <button id="btn-stop" class="btn btn-red"
+          onclick="stopSend()" style="display:none;padding:13px 14px">⏹</button>
+        <button id="btn-reset" class="btn btn-muted btn-full"
+          onclick="resetAll()" style="display:none">↺ Reset</button>
+      </div>
+    </div>
+
+  </div><div id="right-panel">
+    <div style="padding:11px 16px;border-bottom:1px solid var(--bord);background:var(--surf);
+      display:flex;justify-content:space-between;align-items:center;flex-shrink:0">
+      <span style="font-family:monospace;font-size:10px;color:var(--muted);
+        text-transform:uppercase;letter-spacing:.1em">◉ Console SMTP</span>
+      <div style="display:flex;align-items:center;gap:10px">
+        <span id="progress-info" style="display:none;font-family:monospace;
+          font-size:11px;color:var(--dim)"></span>
+        <button class="btn btn-muted" style="padding:4px 10px;font-size:10px"
+          onclick="clearLogs()">CLEAR</button>
+      </div>
+    </div>
+    <div id="console">
+      <div id="console-empty" style="display:flex;flex-direction:column;
+        align-items:center;justify-content:center;min-height:200px;gap:12px;padding:20px">
+        <div style="font-family:monospace;font-size:48px;opacity:.06">✉</div>
+        <div style="font-family:monospace;font-size:12px;color:var(--muted);
+          text-align:center;line-height:2">
+          <span style="color:var(--cyan)">1</span> — Sélectionne ou crée un profil<br/>
+          <span style="color:var(--cyan)">2</span> — Teste la connexion<br/>
+          <span style="color:var(--cyan)">3</span> — Ajoute ta liste<br/>
+          <span style="color:var(--cyan)">4</span> — Rédige ton message<br/>
+          <span style="color:var(--cyan)">5</span> — Lance en arrière-plan<br/><br/>
+          <span style="color:var(--green);font-size:11px">
+            ⚡ L'envoi continue même si tu fermes l'app
+          </span>
+        </div>
+      </div>
+      <div id="console-cmd" style="display:none;font-family:monospace;font-size:11px;
+        color:var(--muted);margin-bottom:12px;padding-bottom:8px;
+        border-bottom:1px solid var(--bord)"></div>
+      <div id="log-lines"></div>
+      <div id="cursor" style="display:none;font-family:monospace;font-size:13px;
+        color:var(--cyan);margin-top:4px" class="pulse">▌</div>
+    </div>
+    <div id="done-bar" style="display:none;padding:10px 16px;
+      border-top:1px solid var(--bord);background:rgba(0,255,136,.05)">
+      <div style="display:flex;gap:16px;flex-wrap:wrap" id="done-stats"></div>
+    </div>
+  </div>
+
+</div>
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
+<title>SMTP Mailer</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --bg:#0a0e1a;--surf:#111827;--bord:#1e2d45;
+    --cyan:#00d4ff;--cyand:#004d5e;--orange:#ff6b35;
+    --green:#00ff88;--red:#ff3b5c;--muted:#4a5568;
+    --text:#e2e8f0;--dim:#8892a4;--purple:#a855f7;
+  }
+  body{background:var(--bg);color:var(--text);font-family:'Inter',system-ui,sans-serif;
+    min-height:100vh;display:flex;flex-direction:column}
+  ::placeholder{color:var(--muted);opacity:1}
+  ::-webkit-scrollbar{width:4px}
+  ::-webkit-scrollbar-track{background:var(--bg)}
+  ::-webkit-scrollbar-thumb{background:var(--bord);border-radius:2px}
+  input,textarea{
+    background:var(--bg);border:1px solid var(--bord);border-radius:5px;
+    padding:9px 12px;color:var(--text);font-family:monospace;font-size:14px;
+    outline:none;width:100%;transition:border-color .15s;-webkit-appearance:none
+  }
+  input:focus,textarea:focus{border-color:var(--cyan)}
+  textarea{resize:vertical;min-height:80px}
+  input[type=checkbox]{width:18px;height:18px;accent-color:var(--cyan);cursor:pointer}
+  input[type=range]{accent-color:var(--cyan);padding:0;width:100%;height:20px}
+  .lbl{display:block;font-size:10px;font-family:monospace;color:var(--cyan);
+    text-transform:uppercase;letter-spacing:.1em;margin-bottom:5px}
+  .field{margin-bottom:14px}
+  .hint{font-size:11px;font-family:monospace;color:var(--muted);margin-top:4px;line-height:1.5}
+  .btn{padding:10px 16px;border-radius:6px;font-family:monospace;font-size:12px;
+    font-weight:700;letter-spacing:.08em;text-transform:uppercase;
+    cursor:pointer;transition:all .15s;border:1px solid;
+    -webkit-tap-highlight-color:transparent}
+  .btn-cyan{border-color:var(--cyan);background:rgba(0,212,255,.12);color:var(--cyan)}
+  .btn-orange{border-color:var(--orange);background:rgba(255,107,53,.12);color:var(--orange)}
+  .btn-green{border-color:var(--green);background:rgba(0,255,136,.12);color:var(--green)}
+  .btn-red{border-color:var(--red);background:rgba(255,59,92,.12);color:var(--red)}
+  .btn-muted{border-color:var(--bord);background:transparent;color:var(--muted)}
+  .btn-purple{border-color:var(--purple);background:rgba(168,85,247,.12);color:var(--purple)}
+  .btn:disabled{opacity:.4;cursor:not-allowed}
+  .btn-full{width:100%;padding:13px;font-size:13px}
+  .chip{padding:6px 10px;border-radius:4px;font-family:monospace;font-size:12px;
+    border:1px solid var(--bord);background:transparent;color:var(--dim);cursor:pointer;
+    -webkit-tap-highlight-color:transparent}
+  .chip.active{border-color:var(--cyan);background:rgba(0,212,255,.12);color:var(--cyan)}
+  .chip-orange.active{border-color:var(--orange);background:rgba(255,107,53,.12);color:var(--orange)}
+  .box{border-radius:6px;border:1px solid var(--bord);background:var(--surf);padding:14px}
+  .warn-box{border-radius:6px;border:1px solid rgba(255,107,53,.4);
+    background:rgba(255,107,53,.08);padding:12px;
+    font-family:monospace;font-size:12px;color:var(--orange);line-height:1.6}
+  .info-box{border-radius:6px;border:1px solid rgba(0,212,255,.2);
+    background:rgba(0,212,255,.06);padding:12px;
+    font-family:monospace;font-size:12px;color:var(--dim);line-height:1.6}
+  .divider{height:1px;background:var(--bord);margin:16px 0}
+  .row{display:flex;gap:8px;align-items:center}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+  .pulse{animation:pulse 1s infinite}
+  .mode-toggle{display:flex;background:var(--bg);border:1px solid var(--bord);
+    border-radius:6px;padding:3px;margin-bottom:18px}
+  .mode-btn{flex:1;padding:10px;border:none;border-radius:4px;font-family:monospace;
+    font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
+    cursor:pointer;transition:all .2s;background:transparent;color:var(--muted);
+    -webkit-tap-highlight-color:transparent}
+  .mode-btn.active-smtp{background:rgba(0,212,255,.15);color:var(--cyan)}
+  .mode-btn.active-resend{background:rgba(168,85,247,.15);color:var(--purple)}
+  .profile-card{display:flex;align-items:center;gap:10px;padding:12px 14px;
+    border-radius:6px;border:1px solid var(--bord);background:var(--surf);
+    margin-bottom:8px;transition:border-color .15s}
+  .profile-card.active-profile{border-color:var(--cyan);background:rgba(0,212,255,.05)}
+  .profile-icon{width:32px;height:32px;border-radius:6px;display:flex;
+    align-items:center;justify-content:center;font-size:15px;flex-shrink:0}
+
+  /* LAYOUT */
+  #main{display:flex;flex:1}
+
+  /* DESKTOP */
+  @media(min-width:768px){
+    body{height:100vh;overflow:hidden}
+    #left-panel{
+      width:420px;min-width:340px;border-right:1px solid var(--bord);
+      display:flex;flex-direction:column;overflow:hidden;
+      flex-shrink:0;height:calc(100vh - 57px)
+    }
+    #right-panel{
+      flex:1;display:flex;flex-direction:column;
+      overflow:hidden;height:calc(100vh - 57px)
+    }
+    #scroll-area{
+      flex:1;overflow-y:scroll;padding:18px;
+      height:0;min-height:0
+    }
+    #console{
+      flex:1;overflow-y:scroll;padding:18px;
+      background:var(--bg);height:0;min-height:0
+    }
+    #send-area{flex-shrink:0}
+  }
+
+  /* MOBILE */
+  @media(max-width:767px){
+    #main{flex-direction:column}
+    #left-panel{width:100%;display:flex;flex-direction:column}
+    #right-panel{width:100%;min-height:280px;display:flex;flex-direction:column}
+    #scroll-area{padding:14px}
+    #console{padding:14px;background:var(--bg);min-height:220px;
+      overflow-y:auto;max-height:350px}
+    #send-area{position:sticky;bottom:0;z-index:10}
+  }
+</style>
+</head>
+<body>
+
+<div style="border-bottom:1px solid var(--bord);padding:12px 16px;
+  display:flex;align-items:center;justify-content:space-between;
+  background:var(--surf);flex-shrink:0;position:sticky;top:0;z-index:20">
+  <div style="display:flex;align-items:center;gap:10px">
+    <div style="width:32px;height:32px;border-radius:6px;background:var(--cyand);
+      border:1px solid rgba(0,212,255,.3);display:flex;align-items:center;
+      justify-content:center;font-size:16px;flex-shrink:0">✉</div>
+    <div>
+      <div style="font-family:monospace;font-weight:700;font-size:13px;
+        color:var(--cyan);letter-spacing:.05em">SMTP MAILER</div>
+      <div style="font-size:10px;color:var(--muted);font-family:monospace">bulk relay console</div>
+    </div>
+  </div>
+  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end">
+    <span id="bg-badge" style="display:none;font-family:monospace;font-size:10px;
+      color:var(--green);background:rgba(0,255,136,.08);
+      border:1px solid rgba(0,255,136,.3);padding:3px 8px;border-radius:4px">⚡ BG</span>
+    <span id="mode-badge" style="font-family:monospace;font-size:10px;padding:3px 8px;
+      border-radius:4px;border:1px solid rgba(0,212,255,.3);
+      background:rgba(0,212,255,.08);color:var(--cyan)">SMTP</span>
+    <span id="validated-badge" style="display:none;font-family:monospace;font-size:10px;
+      color:var(--green);background:rgba(0,255,136,.08);
+      border:1px solid rgba(0,255,136,.3);padding:3px 8px;border-radius:4px">✓ OK</span>
+    <span style="display:inline-flex;align-items:center;gap:5px;font-size:11px;
+      font-family:monospace;text-transform:uppercase;letter-spacing:.1em">
+      <span id="badge-dot" style="width:6px;height:6px;border-radius:50%;
+        background:var(--muted);flex-shrink:0"></span>
+      <span id="badge-text" style="color:var(--muted)">IDLE</span>
+    </span>
+    <button id="disconnect-btn" onclick="disconnect()" style="display:none;
+      padding:4px 10px;border-radius:4px;border:1px solid rgba(255,59,92,.4);
+      background:rgba(255,59,92,.1);color:var(--red);font-family:monospace;
+      font-size:10px;cursor:pointer">⏏ Déco</button>
+  </div>
+</div>
+
+<div id="main">
+
+  <div id="left-panel">
+
+    <div style="display:flex;background:var(--surf);border-bottom:1px solid var(--bord);flex-shrink:0">
+      <button class="tab-btn active" data-tab="profiles" onclick="switchTab('profiles')"
+        style="flex:1;padding:11px 4px;background:none;border:none;
+        border-bottom:2px solid var(--cyan);color:var(--cyan);font-family:monospace;
+        font-size:10px;text-transform:uppercase;letter-spacing:.06em;cursor:pointer">
+        👤 Profils
+      </button>
+      <button class="tab-btn" data-tab="config" onclick="switchTab('config')"
+        style="flex:1;padding:11px 4px;background:none;border:none;
+        border-bottom:2px solid transparent;color:var(--muted);font-family:monospace;
+        font-size:10px;text-transform:uppercase;letter-spacing:.06em;cursor:pointer">
+        ⚙ Config
+        <span id="config-ok-mark" style="display:none;color:var(--green);font-size:9px">✓</span>
+      </button>
+      <button class="tab-btn" data-tab="list" onclick="switchTab('list')"
+        style="flex:1;padding:11px 4px;background:none;border:none;
+        border-bottom:2px solid transparent;color:var(--muted);font-family:monospace;
+        font-size:10px;text-transform:uppercase;letter-spacing:.06em;cursor:pointer">
+        📋 Liste
+      </button>
+      <button class="tab-btn" data-tab="compose" onclick="switchTab('compose')"
+        style="flex:1;padding:11px 4px;background:none;border:none;
+        border-bottom:2px solid transparent;color:var(--muted);font-family:monospace;
+        font-size:10px;text-transform:uppercase;letter-spacing:.06em;cursor:pointer">
+        ✉ Message
+      </button>
+    </div>
+
+    <div id="scroll-area">
+
+      <div id="tab-profiles">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+          <div style="font-size:10px;font-family:monospace;color:var(--cyan);
+            text-transform:uppercase;letter-spacing:.1em">Connexions sauvegardées</div>
+          <button class="btn btn-cyan" style="padding:6px 12px;font-size:10px"
+            onclick="switchTab('config')">+ Nouveau</button>
+        </div>
+        <div id="profiles-list">
+          <div id="profiles-empty" style="text-align:center;padding:30px 0;
+            color:var(--muted);font-family:monospace;font-size:12px;line-height:1.8">
+            Aucun profil sauvegardé<br/>
+            <span style="color:var(--bord)">Clique sur "+ Nouveau" pour en créer un</span>
+          </div>
+        </div>
+        <div id="profile-test-area" style="display:none;margin-top:16px">
+          <div class="divider"></div>
+          <div class="field">
+            <label class="lbl">Email de test pour le profil sélectionné</label>
+            <input id="profile-test-email" placeholder="ton@email.com"
+              type="email" autocapitalize="none"/>
+          </div>
+          <button class="btn btn-orange btn-full" id="profile-test-btn"
+            onclick="testSelectedProfile()">🧪 Tester ce profil</button>
+          <div id="profile-test-result" style="display:none;margin-top:10px"></div>
+        </div>
+      </div>
+
+      <div id="tab-config" style="display:none">
+        <div class="field">
+          <label class="lbl">Nom du profil</label>
+          <input id="profile-name" placeholder="ex: Gmail Pro / Resend Domain1 / Bluewin"/>
+          <div class="hint">Pour retrouver facilement cette connexion</div>
+        </div>
+        <div class="divider"></div>
+        <div class="mode-toggle">
+          <button class="mode-btn active-smtp" id="mode-smtp-btn"
+            onclick="setMode('smtp')">⚙ SMTP</button>
+          <button class="mode-btn" id="mode-resend-btn"
+            onclick="setMode('resend')">⚡ Resend API</button>
+        </div>
+
+        <div id="smtp-fields">
+          <div class="field">
+            <label class="lbl">Provider</label>
+            <div style="display:flex;flex-wrap:wrap;gap:6px" id="preset-btns">
+              <button class="chip active" onclick="applyPreset('gmail')">gmail</button>
+              <button class="chip" onclick="applyPreset('outlook')">outlook</button>
+              <button class="chip" onclick="applyPreset('yahoo')">yahoo</button>
+              <button class="chip" onclick="applyPreset('bluewin')">bluewin</button>
+              <button class="chip" onclick="applyPreset('custom')">custom</button>
+            </div>
+          </div>
+          <div style="display:flex;gap:10px">
+            <div class="field" style="flex:2">
+              <label class="lbl">Host SMTP</label>
+              <input id="smtp-host" value="smtp.gmail.com" placeholder="smtp.example.com"
+                oninput="configChanged()"/>
+            </div>
+            <div class="field" style="flex:1">
+              <label class="lbl">Port</label>
+              <input id="smtp-port" value="587" placeholder="587"
+                oninput="configChanged()" type="number"/>
+            </div>
+          </div>
+          <div class="field">
+            <label class="lbl">Chiffrement</label>
+            <div style="display:flex;gap:8px">
+              <button id="enc-starttls" class="chip chip-orange active"
+                onclick="setSecure(false)" style="flex:1;padding:10px">STARTTLS</button>
+              <button id="enc-ssl" class="chip chip-orange"
+                onclick="setSecure(true)" style="flex:1;padding:10px">SSL/TLS</button>
+            </div>
+          </div>
+          <div class="field">
+            <label class="lbl">Utilisateur SMTP</label>
+            <input id="smtp-user" placeholder="toi@gmail.com"
+              oninput="configChanged()" type="email" autocapitalize="none"/>
+          </div>
+          <div class="field">
+            <label class="lbl">Mot de passe / App Password</label>
+            <input id="smtp-pass" type="password" placeholder="••••••••••••"
+              oninput="configChanged()"/>
+            <div class="hint">Gmail avec 2FA : génère un App Password</div>
+          </div>
+        </div>
+
+        <div id="resend-fields" style="display:none">
+          <div style="padding:12px;border-radius:6px;background:rgba(168,85,247,.08);
+            border:1px solid rgba(168,85,247,.3);margin-bottom:16px;
+            font-family:monospace;font-size:12px;color:var(--purple);line-height:1.6">
+            ⚡ Resend API — meilleure délivrabilité, moins de spam
+          </div>
+          <div class="field">
+            <label class="lbl">Clé API Resend</label>
+            <input id="resend-key" type="password" placeholder="re_xxxxxxxxxxxxxxxxxx"
+              oninput="configChanged()" autocapitalize="none"/>
+            <div class="hint">Disponible sur resend.com → API Keys</div>
+          </div>
+          <div class="field">
+            <label class="lbl">From Email</label>
+            <input id="resend-from-email" placeholder="toi@tondomaine.com"
+              oninput="configChanged()" type="email" autocapitalize="none"/>
+            <div class="hint">Doit être un domaine vérifié sur Resend</div>
+          </div>
+        </div>
+
+        <div class="field">
+          <label class="lbl">From Name
+            <span style="color:var(--dim);font-size:9px;text-transform:none">(nom d'affichage)</span>
+          </label>
+          <input id="from-name" placeholder="Mon Entreprise / Mon Nom"/>
+          <div class="hint">Apparaît comme : "Mon Nom" &lt;email&gt;</div>
+        </div>
+        <div class="divider"></div>
+
+        <div class="box">
+          <div style="font-size:10px;font-family:monospace;color:var(--cyan);
+            text-transform:uppercase;letter-spacing:.1em;margin-bottom:12px">
+            🧪 Test de connexion
+          </div>
+          <div class="field">
+            <label class="lbl">Adresse email de test</label>
+            <input id="test-email" placeholder="ton@email.com"
+              type="email" autocapitalize="none"/>
+            <div class="hint">Reçois un vrai email pour vérifier réception et spam</div>
+          </div>
+          <button class="btn btn-orange btn-full" id="test-btn" onclick="runTest()">
+            🧪 Envoyer un mail de test
+          </button>
+          <div id="test-result" style="display:none;margin-top:12px"></div>
+        </div>
+        <div id="smtp-warn-box" class="warn-box" style="margin-top:14px">
+          ⚠ Gmail : active l'accès aux apps moins sécurisées ou génère un App Password.
+        </div>
+      </div>
+
+      <div id="tab-list" style="display:none">
+        <div id="list-smtp-warn" class="warn-box" style="display:none;margin-bottom:14px">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            ⚠ Sélectionne ou configure d'abord une connexion
+            <button class="btn btn-muted"
+              style="margin-left:auto;padding:5px 10px;font-size:11px"
+              onclick="switchTab('profiles')">→ Profils</button>
+          </div>
+        </div>
+        <div class="field">
+          <label class="lbl">Ajouter des destinataires</label>
+          <textarea id="bulk-input" rows="4"
+            placeholder="jean@example.com&#10;Marie Dupont <marie@example.com>&#10;bob@test.com"
+            autocapitalize="none" autocorrect="off"></textarea>
+          <div class="hint">1 par ligne · formats : email / Nom &lt;email&gt;</div>
+        </div>
+        <div class="row" style="margin-bottom:18px">
+          <button class="btn btn-cyan" style="flex:1" onclick="parseBulk()">+ Ajouter</button>
+          <button class="btn btn-muted"
+            onclick="document.getElementById('bulk-input').value=''">Effacer</button>
+        </div>
+
+        <div class="box" style="margin-bottom:18px">
+          <div style="font-size:10px;font-family:monospace;color:var(--cyan);
+            text-transform:uppercase;letter-spacing:.1em;margin-bottom:10px">
+            ⏱ Délai entre chaque envoi
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px" id="delay-presets">
+            <button class="chip" onclick="setDelay(1000)">1s</button>
+            <button class="chip active" onclick="setDelay(5000)">5s</button>
+            <button class="chip" onclick="setDelay(15000)">15s</button>
+            <button class="chip" onclick="setDelay(30000)">30s</button>
+            <button class="chip" onclick="setDelay(60000)">1min</button>
+            <button class="chip" onclick="setDelay(120000)">2min</button>
+            <button class="chip" onclick="setDelay(300000)">5min</button>
+          </div>
+          <input type="range" id="delay-slider" min="1000" max="300000"
+            step="1000" value="5000" oninput="onSlider(this.value)"/>
+          <div style="display:flex;justify-content:space-between;font-family:monospace;
+            font-size:11px;color:var(--muted);margin-top:6px">
+            <span>1s</span>
+            <span id="delay-label" style="color:var(--cyan);font-weight:700">5 sec</span>
+            <span>5min</span>
+          </div>
+        </div>
+
+        <div id="list-header" style="display:none;margin-bottom:10px">
+          <div style="display:flex;align-items:center;justify-content:space-between;
+            flex-wrap:wrap;gap:8px">
+            <span id="list-count" style="font-family:monospace;font-size:11px;
+              color:var(--muted);text-transform:uppercase;letter-spacing:.08em"></span>
+            <div style="display:flex;gap:10px">
+              <button style="background:none;border:none;color:var(--muted);
+                font-family:monospace;font-size:11px;cursor:pointer;padding:4px"
+                onclick="toggleAll()">Tout</button>
+              <button style="background:none;border:none;color:var(--muted);
+                font-family:monospace;font-size:11px;cursor:pointer;padding:4px"
+                onclick="clearSent()">- Envoyés</button>
+              <button style="background:none;border:none;color:rgba(255,59,92,.7);
+                font-family:monospace;font-size:11px;cursor:pointer;padding:4px"
+                onclick="clearAll()">Vider</button>
+            </div>
+          </div>
+        </div>
+        <div id="rec-list"></div>
+        <div id="list-empty" style="text-align:center;padding:30px 0;color:var(--muted);
+          font-family:monospace;font-size:13px;line-height:1.8">
+          Colle des adresses ci-dessus<br/>
+          <span style="color:var(--bord)">pour constituer ta liste d'envoi</span>
+        </div>
+      </div>
+
+      <div id="tab-compose" style="display:none">
+        <div id="from-preview" style="display:none;margin-bottom:14px;padding:10px 12px;
+          border-radius:5px;border:1px solid rgba(0,255,136,.2);background:rgba(0,255,136,.05)">
+          <span style="font-family:monospace;font-size:12px;color:var(--green)">From: </span>
+          <span id="from-preview-text" style="font-family:monospace;font-size:12px;color:var(--dim)"></span>
+        </div>
+        <div class="field">
+          <label class="lbl">Sujet</label>
+          <input id="mail-subject" placeholder="Votre sujet ici"/>
+        </div>
+        <div class="field">
+          <label class="lbl">Corps du message</label>
+          <div style="display:flex;gap:6px;margin-bottom:8px">
+            <button id="mode-text" class="chip active" onclick="setHtmlMode(false)">Texte brut</button>
+            <button id="mode-html" class="chip" onclick="setHtmlMode(true)">HTML</button>
+          </div>
+          <textarea id="mail-body" rows="8"
+            placeholder="Bonjour {{name}},&#10;&#10;Ton message ici..."></textarea>
+        </div>
+        <div class="info-box">
+          💡 Utilise <span style="color:var(--cyan)">{{name}}</span> —
+          remplacé par le nom de chaque destinataire.
+        </div>
+      </div>
+
+    </div><div id="send-area" style="padding:14px 16px;border-top:1px solid var(--bord);background:var(--surf)">
+      <div id="progress-bar-wrap" style="display:none;margin-bottom:10px">
+        <div style="display:flex;justify-content:space-between;font-family:monospace;
+          font-size:11px;color:var(--muted);margin-bottom:5px">
+          <span id="prog-fraction">0 / 0</span>
+          <span id="prog-sent" style="color:var(--green)">✓ 0</span>
+          <span id="prog-failed" style="color:var(--red)">✗ 0</span>
+        </div>
+        <div style="height:4px;border-radius:2px;background:var(--bord)">
+          <div id="prog-bar" style="height:100%;border-radius:2px;width:0%;
+            background:linear-gradient(90deg,var(--cyan),var(--green));transition:width .3s"></div>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button id="btn-start" class="btn btn-cyan btn-full"
+          onclick="startSend()">▶ Lancer (0 mails)</button>
+        <button id="btn-pause" class="btn btn-orange"
+          onclick="pauseSend()" style="display:none;padding:13px 14px">⏸</button>
+        <button id="btn-resume" class="btn btn-green"
+          onclick="resumeSend()" style="display:none;padding:13px 14px">▶</button>
+        <button id="btn-stop" class="btn btn-red"
+          onclick="stopSend()" style="display:none;padding:13px 14px">⏹</button>
+        <button id="btn-reset" class="btn btn-muted btn-full"
+          onclick="resetAll()" style="display:none">↺ Reset</button>
+      </div>
+    </div>
+
+  </div><div id="right-panel">
+    <div style="padding:11px 16px;border-bottom:1px solid var(--bord);background:var(--surf);
+      display:flex;justify-content:space-between;align-items:center;flex-shrink:0">
+      <span style="font-family:monospace;font-size:10px;color:var(--muted);
+        text-transform:uppercase;letter-spacing:.1em">◉ Console SMTP</span>
+      <div style="display:flex;align-items:center;gap:10px">
+        <span id="progress-info" style="display:none;font-family:monospace;
+          font-size:11px;color:var(--dim)"></span>
+        <button class="btn btn-muted" style="padding:4px 10px;font-size:10px"
+          onclick="clearLogs()">CLEAR</button>
+      </div>
+    </div>
+    <div id="console">
+      <div id="console-empty" style="display:flex;flex-direction:column;
+        align-items:center;justify-content:center;min-height:200px;gap:12px;padding:20px">
+        <div style="font-family:monospace;font-size:48px;opacity:.06">✉</div>
+        <div style="font-family:monospace;font-size:12px;color:var(--muted);
+          text-align:center;line-height:2">
+          <span style="color:var(--cyan)">1</span> — Sélectionne ou crée un profil<br/>
+          <span style="color:var(--cyan)">2</span> — Teste la connexion<br/>
+          <span style="color:var(--cyan)">3</span> — Ajoute ta liste<br/>
+          <span style="color:var(--cyan)">4</span> — Rédige ton message<br/>
+          <span style="color:var(--cyan)">5</span> — Lance en arrière-plan<br/><br/>
+          <span style="color:var(--green);font-size:11px">
+            ⚡ L'envoi continue même si tu fermes l'app
+          </span>
+        </div>
+      </div>
+      <div id="console-cmd" style="display:none;font-family:monospace;font-size:11px;
+        color:var(--muted);margin-bottom:12px;padding-bottom:8px;
+        border-bottom:1px solid var(--bord)"></div>
+      <div id="log-lines"></div>
+      <div id="cursor" style="display:none;font-family:monospace;font-size:13px;
+        color:var(--cyan);margin-top:4px" class="pulse">▌</div>
+    </div>
+    <div id="done-bar" style="display:none;padding:10px 16px;
+      border-top:1px solid var(--bord);background:rgba(0,255,136,.05)">
+      <div style="display:flex;gap:16px;flex-wrap:wrap" id="done-stats"></div>
+    </div>
+  </div>
+
+</div>
+<script>
+const state = {
+  mode: "smtp",
+  smtp: { host:"smtp.gmail.com", port:"587", secure:false, user:"", pass:"" },
+  resendKey: "",
+  fromEmail: "",
+  fromName: "",
+  validated: false,
+  activeProfileId: null,
+  mail: { subject:"", body:"", html:false },
+  recipients: [],
+  delayMs: 5000,
+  nextId: 1,
+  logIndex: 0,
+  pollInterval: null,
+  profiles: [],
+};
+
+const PRESETS = {
+  gmail:   { host:"smtp.gmail.com",        port:"587", secure:false },
+  outlook: { host:"smtp-mail.outlook.com", port:"587", secure:false },
+  yahoo:   { host:"smtp.mail.yahoo.com",   port:"465", secure:true  },
+  bluewin: { host:"smtpauth.sunrise.ch",   port:"587", secure:false },
+  custom:  { host:"",                       port:"",    secure:false },
+};
+
+const clean = s => (s||"").replace(/[\u200B-\u200D\uFEFF\u2060\u00AD]/g,"").trim();
+
+// ── PROFILS ───────────────────────────────────────────────────────────────────
+async function loadProfiles() {
+  try {
+    const r = await fetch("/api/profiles");
+    const data = await r.json();
+    if (data.success) { state.profiles=data.profiles; renderProfiles(); }
+  } catch(e) {}
+}
+
+function renderProfiles() {
+  const list  = document.getElementById("profiles-list");
+  const empty = document.getElementById("profiles-empty");
+  if (!state.profiles.length) {
+    empty.style.display="block"; list.innerHTML="";
+    document.getElementById("profile-test-area").style.display="none"; return;
+  }
+  empty.style.display="none";
+  list.innerHTML = state.profiles.map(p => {
+    const isActive = p.id===state.activeProfileId;
+    const icon = p.mode==="resend"?"⚡":"📧";
+    const col  = p.mode==="resend"?"var(--purple)":"var(--cyan)";
+    const bg   = p.mode==="resend"?"rgba(168,85,247,.15)":"rgba(0,212,255,.15)";
+    const sub  = p.mode==="resend"
+      ? `Resend API — ${p.fromEmail||""}`
+      : `${p.smtp?.host||""}:${p.smtp?.port||""} — ${p.fromEmail||""}`;
+    return `
+      <div class="profile-card ${isActive?"active-profile":""}">
+        <div class="profile-icon" style="background:${bg};color:${col}">${icon}</div>
+        <div style="flex:1;min-width:0">
+          <div style="font-family:monospace;font-size:13px;font-weight:700;
+            color:${isActive?"var(--cyan)":"var(--text)"};margin-bottom:2px">
+            ${p.name}
+            ${isActive?'<span style="font-size:9px;color:var(--green);margin-left:6px">● ACTIF</span>':""}
+          </div>
+          <div style="font-family:monospace;font-size:10px;color:var(--dim);
+            white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${sub}</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-shrink:0">
+          ${!isActive
+            ?`<button onclick="selectProfile('${p.id}')"
+                style="padding:5px 10px;border-radius:4px;border:1px solid var(--cyan);
+                background:rgba(0,212,255,.1);color:var(--cyan);font-family:monospace;
+                font-size:10px;cursor:pointer;font-weight:700">Utiliser</button>`
+            :`<button onclick="selectProfile(null)"
+                style="padding:5px 10px;border-radius:4px;border:1px solid var(--muted);
+                background:transparent;color:var(--muted);font-family:monospace;
+                font-size:10px;cursor:pointer">Déco</button>`}
+          <button onclick="deleteProfile('${p.id}')"
+            style="padding:5px 8px;border-radius:4px;border:1px solid rgba(255,59,92,.3);
+            background:rgba(255,59,92,.08);color:var(--red);font-family:monospace;
+            font-size:12px;cursor:pointer">×</button>
+        </div>
+      </div>`;
+  }).join("");
+  document.getElementById("profile-test-area").style.display =
+    state.activeProfileId ? "block" : "none";
+}
+
+function selectProfile(id) {
+  if (id) {
+    const p = state.profiles.find(p=>p.id===id);
+    if (p) {
+      setMode(p.mode);
+      state.activeProfileId = id;
+      state.validated = true;
+      state.fromEmail = p.fromEmail;
+      state.fromName = p.fromName || "";
+      
+      document.getElementById("profile-name").value = p.name || "";
+      document.getElementById("from-name").value = p.fromName || "";
+      
+      if (p.mode === "smtp" && p.smtp) {
+        document.getElementById("smtp-host").value = p.smtp.host || "";
+        document.getElementById("smtp-port").value = p.smtp.port || "";
+        document.getElementById("smtp-user").value = p.smtp.user || "";
+        document.getElementById("smtp-pass").value = p.smtp.pass || "";
+        setSecure(p.smtp.secure, false);
+      } else if (p.mode === "resend") {
+        document.getElementById("resend-key").value = p.resendKey || "";
+        document.getElementById("resend-from-email").value = p.fromEmail || "";
+      }
+
+      document.getElementById("mail-subject").value = p.subject || "";
+      document.getElementById("mail-body").value = p.body || "";
+      state.mail.subject = p.subject || "";
+      state.mail.body = p.body || "";
+
+      updateModeBadge(p.mode);
+      document.getElementById("validated-badge").style.display ="inline-flex";
+      document.getElementById("config-ok-mark").style.display  ="inline";
+      document.getElementById("disconnect-btn").style.display  ="inline-flex";
+      
+      addLog(`✓ Profil "${p.name}" activé et données chargées`,"success");
+    }
+  } else {
+    state.validated=false; state.activeProfileId=null;
+    document.getElementById("validated-badge").style.display ="none";
+    document.getElementById("config-ok-mark").style.display  ="none";
+    document.getElementById("disconnect-btn").style.display  ="none";
+    addLog("Profil déconnecté","info");
+  }
+  renderProfiles(); updateStartBtn();
+}
+
+async function deleteProfile(id) {
+  if (!confirm("Supprimer ce profil ?")) return;
+  try {
+    await fetch(`/api/profiles/${id}`,{method:"DELETE"});
+    if (state.activeProfileId===id) selectProfile(null);
+    await loadProfiles();
+    addLog("Profil supprimé","info");
+  } catch(e) { addLog("Erreur lors de la suppression","error"); }
+}
+
+async function saveProfile() {
+  const name = clean(document.getElementById("profile-name").value);
+  if (!name) { addLog("Donne un nom à ce profil","warn"); return; }
+  const smtp = {
+    host:clean(document.getElementById("smtp-host").value),
+    port:clean(document.getElementById("smtp-port").value),
+    secure:state.smtp.secure,
+    user:clean(document.getElementById("smtp-user").value),
+    pass:document.getElementById("smtp-pass").value.trim(),
+  };
+  const resendKey = clean(document.getElementById("resend-key").value);
+  const fromEmail = state.mode==="smtp"
+    ? clean(document.getElementById("smtp-user").value)
+    : clean(document.getElementById("resend-from-email").value);
+  const fromName  = clean(document.getElementById("from-name").value);
+  const subject = document.getElementById("mail-subject").value;
+  const body = document.getElementById("mail-body").value;
+
+  try {
+    const r = await fetch("/api/profiles",{
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({name, mode:state.mode, smtp, resendKey, fromEmail, fromName, subject, body}),
+    });
+    const data = await r.json();
+    if (data.success) {
+      addLog(`✓ Profil "${name}" sauvegardé avec le message`,"success");
+      await loadProfiles();
+      selectProfile(data.profile.id); 
+      switchTab("profiles");
+    }
+  } catch(e) { addLog("Erreur lors de la sauvegarde","error"); }
+}
+
+async function testSelectedProfile() {
+  if (!state.activeProfileId) return;
+  const testEmail = clean(document.getElementById("profile-test-email").value);
+  if (!testEmail) { addLog("Entre une adresse de test","warn"); return; }
+  const btn=document.getElementById("profile-test-btn");
+  const res=document.getElementById("profile-test-result");
+  btn.disabled=true; btn.textContent="⟳ Test en cours...";
+  res.style.display="none";
+  setBadge("testing","TESTING","var(--orange)");
+  try {
+    const r=await fetch(`/api/profiles/${state.activeProfileId}/test`,{
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({testEmail}),
+    });
+    const data=await r.json();
+    if (data.success) {
+      addLog(`✓ Test réussi — email envoyé à ${testEmail}`,"success");
+      res.style.display="block";
+      res.innerHTML=`<div style="border-radius:6px;border:1px solid rgba(0,255,136,.3);
+        background:rgba(0,255,136,.06);padding:12px;font-family:monospace;font-size:12px;
+        color:var(--green)">✅ Test réussi — vérifie ta boîte et le dossier spam</div>`;
+    } else {
+      addLog(`✗ Échec : ${data.detail||data.error}`,"error");
+      res.style.display="block";
+      res.innerHTML=`<div class="warn-box">❌ ${data.detail||data.error}</div>`;
+    }
+    setBadge("idle","IDLE","var(--muted)");
+  } catch(e) {
+    addLog(`Erreur réseau : ${e.message}`,"error");
+    setBadge("error","ERROR","var(--red)");
+  }
+  btn.disabled=false; btn.textContent="🧪 Tester ce profil";
+}
+
+// ── MODE ──────────────────────────────────────────────────────────────────────
+function setMode(m) {
+  state.mode=m; state.validated=false; state.activeProfileId=null;
+  document.getElementById("validated-badge").style.display ="none";
+  document.getElementById("config-ok-mark").style.display  ="none";
+  document.getElementById("test-result").style.display     ="none";
+  document.getElementById("smtp-fields").style.display   =m==="smtp"?"block":"none";
+  document.getElementById("resend-fields").style.display =m==="smtp"?"none":"block";
+  document.getElementById("smtp-warn-box").style.display =m==="smtp"?"block":"none";
+  document.getElementById("mode-smtp-btn").className   ="mode-btn"+(m==="smtp"?" active-smtp":"");
+  document.getElementById("mode-resend-btn").className ="mode-btn"+(m==="resend"?" active-resend":"");
+  updateModeBadge(m);
+}
+
+function updateModeBadge(m) {
+  const badge=document.getElementById("mode-badge");
+  badge.textContent      =m==="smtp"?"SMTP":"RESEND";
+  badge.style.borderColor=m==="smtp"?"rgba(0,212,255,.3)" :"rgba(168,85,247,.3)";
+  badge.style.background =m==="smtp"?"rgba(0,212,255,.08)":"rgba(168,85,247,.08)";
+  badge.style.color      =m==="smtp"?"var(--cyan)"        :"var(--purple)";
+}
+
+// ── TABS ──────────────────────────────────────────────────────────────────────
+function switchTab(name) {
+  ["profiles","config","list","compose"].forEach(t=>{
+    document.getElementById(`tab-${t}`).style.display=t===name?"block":"none";
+  });
+  document.querySelectorAll(".tab-btn").forEach(b=>{
+    const active=b.dataset.tab===name;
+    b.style.borderBottom=active?"2px solid var(--cyan)":"2px solid transparent";
+    b.style.color=active?"var(--cyan)":"var(--muted)";
+  });
+  if (name==="list")    renderListWarn();
+  if (name==="compose") renderFromPreview();
+}
+
+// ── SMTP CONFIG ───────────────────────────────────────────────────────────────
+function applyPreset(k) {
+  const p=PRESETS[k];
+  document.getElementById("smtp-host").value=p.host;
+  document.getElementById("smtp-port").value=p.port;
+  setSecure(p.secure,false);
+  document.querySelectorAll("#preset-btns .chip").forEach(b=>{
+    b.classList.toggle("active",b.textContent.trim()===k);
+  });
+  configChanged();
+}
+
+function setSecure(val,update=true) {
+  state.smtp.secure=val;
+  document.getElementById("enc-starttls").classList.toggle("active",!val);
+  document.getElementById("enc-ssl").classList.toggle("active",val);
+  if (update) configChanged();
+}
+
+function configChanged() {
+  state.validated=false; state.activeProfileId=null;
+  document.getElementById("validated-badge").style.display ="none";
+  document.getElementById("config-ok-mark").style.display  ="none";
+  document.getElementById("test-result").style.display     ="none";
+  document.getElementById("disconnect-btn").style.display  ="none";
+}
+
+// ── DÉCONNEXION ───────────────────────────────────────────────────────────────
+function disconnect() {
+  if (!confirm("Déconnecter la session active ?")) return;
+  stopPolling();
+  state.validated=false; state.activeProfileId=null;
+  
+  document.getElementById("profile-name").value = "";
+  document.getElementById("smtp-pass").value = "";
+  document.getElementById("resend-key").value = "";
+  document.getElementById("mail-subject").value = "";
+  document.getElementById("mail-body").value = "";
+  
+  document.getElementById("validated-badge").style.display  ="none";
+  document.getElementById("config-ok-mark").style.display   ="none";
+  document.getElementById("disconnect-btn").style.display   ="none";
+  document.getElementById("bg-badge").style.display         ="none";
+  document.getElementById("progress-bar-wrap").style.display="none";
+  document.getElementById("progress-info").style.display    ="none";
+  document.getElementById("done-bar").style.display         ="none";
+  document.getElementById("btn-start").style.display  ="block";
+  document.getElementById("btn-pause").style.display  ="none";
+  document.getElementById("btn-resume").style.display ="none";
+  document.getElementById("btn-stop").style.display   ="none";
+  document.getElementById("btn-reset").style.display  ="none";
+  setBadge("idle","IDLE","var(--muted)");
+  clearLogs(); renderProfiles(); switchTab("profiles");
+  fetch("/api/queue/reset",{method:"POST"}).catch(()=>{});
+  addLog("Session déconnectée","info");
+}
+
+// ── TEST ──────────────────────────────────────────────────────────────────────
+async function runTest() {
+  state.smtp.host =clean(document.getElementById("smtp-host").value);
+  state.smtp.port =clean(document.getElementById("smtp-port").value);
+  state.smtp.user =clean(document.getElementById("smtp-user").value);
+  state.smtp.pass =document.getElementById("smtp-pass").value.trim();
+  state.resendKey =clean(document.getElementById("resend-key").value);
+  state.fromName  =clean(document.getElementById("from-name").value);
+  state.fromEmail =state.mode==="smtp"
+    ? clean(document.getElementById("smtp-user").value)
+    : clean(document.getElementById("resend-from-email").value);
+  const testEmail=clean(document.getElementById("test-email").value);
+
+  const btn=document.getElementById("test-btn");
+  const res=document.getElementById("test-result");
+  btn.disabled=true; btn.textContent="⟳ Test en cours...";
+  res.style.display="none";
+  setBadge("testing","TESTING","var(--orange)");
+  const modeLabel=state.mode==="resend"?"Resend API":`SMTP ${state.smtp.host}`;
+  addLog(`Test ${modeLabel}`,"info");
+
+  try {
+    const r=await fetch("/api/test",{
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({
+        mode:state.mode, smtp:state.smtp, resendKey:state.resendKey,
+        fromEmail:state.fromEmail, fromName:state.fromName, testEmail,
+      }),
+    });
+    const data=await r.json();
+    if (data.success) {
+      addLog(`OK — message envoyé à ${testEmail}`,"success");
+      res.style.display="block";
+      res.innerHTML=`
+        <div style="border-radius:6px;border:1px solid rgba(0,255,136,.3);
+          background:rgba(0,255,136,.06);padding:14px">
+          <div style="display:flex;gap:10px;align-items:flex-start">
+            <span style="font-size:20px;flex-shrink:0">✅</span>
+            <div style="flex:1">
+              <div style="font-family:monospace;font-size:12px;font-weight:700;
+                color:var(--green);margin-bottom:6px">Test réussi — ${modeLabel}</div>
+              <div style="font-family:monospace;font-size:11px;color:var(--dim);
+                margin-bottom:8px;line-height:1.6">
+                Email envoyé à <b>${testEmail}</b>.<br/>Vérifie ta boîte et le dossier spam.
+              </div>
+              <div style="padding:8px;border-radius:4px;background:rgba(255,107,53,.08);
+                border:1px solid rgba(255,107,53,.25);font-family:monospace;font-size:11px;
+                color:var(--orange);margin-bottom:12px">
+                💡 Pas reçu ? Vérifie <b>Spam / Indésirables</b>
+              </div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+                <button class="btn btn-green" style="flex:1;min-width:120px;padding:10px"
+                  onclick="validateConfig()">✓ Valider →</button>
+                <button class="btn btn-purple" style="flex:1;min-width:120px;padding:10px"
+                  onclick="validateAndSave()">💾 Sauvegarder</button>
+              </div>
+              <button class="btn btn-muted btn-full" style="padding:8px"
+                onclick="resetTest()">Re-tester</button>
+            </div>
+          </div>
+        </div>`;
+      setBadge("idle","IDLE","var(--muted)");
+    } else {
+      addLog(`ERREUR : ${data.detail||data.error}`,"error");
+      res.style.display="block";
+      res.innerHTML=`
+        <div style="border-radius:6px;border:1px solid rgba(255,59,92,.3);
+          background:rgba(255,59,92,.06);padding:14px">
+          <div style="display:flex;gap:10px;align-items:flex-start">
+            <span style="font-size:20px;flex-shrink:0">❌</span>
+            <div>
+              <div style="font-family:monospace;font-size:12px;font-weight:700;
+                color:var(--red);margin-bottom:6px">Échec du test</div>
+              <div style="font-family:monospace;font-size:11px;color:var(--dim);
+                margin-bottom:12px;line-height:1.6">${data.detail||data.error}</div>
+              <button class="btn btn-orange" onclick="resetTest()">↺ Corriger</button>
+            </div>
+          </div>
+        </div>`;
+      setBadge("idle","IDLE","var(--muted)");
+    }
+  } catch(err) {
+    addLog(`Erreur réseau : ${err.message}`,"error");
+    res.style.display="block";
+    res.innerHTML=`<div class="warn-box">Impossible de joindre le serveur.<br/>${err.message}</div>`;
+    setBadge("error","ERROR","var(--red)");
+  }
+  btn.disabled=false; btn.textContent="🧪 Envoyer un mail de test";
+}
+
+function validateConfig() {
+  state.fromName =document.getElementById("from-name").value.trim();
+  state.fromEmail=state.mode==="smtp"
+    ? document.getElementById("smtp-user").value.trim()
+    : document.getElementById("resend-from-email").value.trim();
+  state.validated=true;
+  document.getElementById("validated-badge").style.display ="inline-flex";
+  document.getElementById("config-ok-mark").style.display  ="inline";
+  document.getElementById("disconnect-btn").style.display  ="inline-flex";
+  addLog(`✓ Config validée — ${state.mode==="resend"?"Resend API":state.smtp.host}`,"success");
+  switchTab("list");
+}
+
+async function validateAndSave() { validateConfig(); await saveProfile(); }
+
+function resetTest() {
+  document.getElementById("test-result").style.display    ="none";
+  document.getElementById("validated-badge").style.display="none";
+  document.getElementById("config-ok-mark").style.display ="none";
+  document.getElementById("disconnect-btn").style.display ="none";
+  state.validated=false;
+}
+
+// ── DELAY ─────────────────────────────────────────────────────────────────────
+function setDelay(ms) {
+  state.delayMs=ms;
+  document.getElementById("delay-slider").value=ms;
+  updateDelayLabel();
+  document.querySelectorAll("#delay-presets .chip").forEach(b=>{
+    const bms=parseInt(b.getAttribute("onclick").match(/\d+/)[0]);
+    b.classList.toggle("active",bms===ms);
+  });
+}
+
+function onSlider(val) {
+  state.delayMs=parseInt(val); updateDelayLabel();
+  document.querySelectorAll("#delay-presets .chip").forEach(b=>b.classList.remove("active"));
+}
+
+function updateDelayLabel() {
+  const ms=state.delayMs;
+  document.getElementById("delay-label").textContent=
+    ms>=60000?`${Math.round(ms/60000)} min`:`${Math.round(ms/1000)} sec`;
+}
+
+// ── RECIPIENTS ────────────────────────────────────────────────────────────────
+function parseBulk() {
+  const raw=document.getElementById("bulk-input").value;
+  const lines=raw.split(/\n|;/).map(l=>l.trim()).filter(Boolean);
+  const existing=new Set(state.recipients.map(r=>r.email));
+  let added=0;
+  lines.forEach(line=>{
+    let email="",name="";
+    const m1=line.match(/^(.+?)\s*<([^>]+)>$/);
+    if(m1){name=clean(m1[1]);email=clean(m1[2]);}
+    else{
+      const m2=line.match(/[^\s@,]+@[^\s@,]+\.[^\s@,]+/);
+      if(m2){email=clean(m2[0]);name=clean(line.replace(m2[0],"").replace(/,/g,""));}
+    }
+    if(email&&!existing.has(email)){
+      state.recipients.push({id:state.nextId++,email,name,active:true,status:"pending"});
+      existing.add(email);added++;
+    }
+  });
+  document.getElementById("bulk-input").value="";
+  renderRecipients();updateStartBtn();
+  if(added===0)addLog("Aucune nouvelle adresse valide","warn");
+  else addLog(`${added} destinataire(s) ajouté(s) — total : ${state.recipients.length}`,"success");
+}
+
+function renderRecipients() {
+  const list  =document.getElementById("rec-list");
+  const empty =document.getElementById("list-empty");
+  const header=document.getElementById("list-header");
+  const active=state.recipients.filter(r=>r.active).length;
+  if(!state.recipients.length){
+    list.innerHTML="";empty.style.display="block";header.style.display="none";return;
+  }
+  empty.style.display="none";header.style.display="block";
+  document.getElementById("list-count").textContent=
+    `${state.recipients.length} contact${state.recipients.length>1?"s":""} — ${active} actif${active>1?"s":""}`;
+  list.innerHTML=state.recipients.map(r=>{
+    const stCol =r.status==="sent"?"var(--green)":r.status==="error"?"var(--red)":r.status==="sending"?"var(--cyan)":"var(--muted)";
+    const stIcon=r.status==="sent"?"✓":r.status==="error"?"✗":r.status==="sending"?"⟳":"–";
+    return `
+      <div style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:5px;
+        background:${r.active?"rgba(0,212,255,.06)":"transparent"};
+        border:1px solid ${r.active?"var(--bord)":"transparent"};margin-bottom:5px">
+        <input type="checkbox" ${r.active?"checked":""} onchange="toggleRec(${r.id})"
+          style="width:18px;height:18px;flex-shrink:0"/>
+        <span style="width:16px;text-align:center;color:${stCol};
+          font-family:monospace;font-size:13px;flex-shrink:0">${stIcon}</span>
+        <span style="flex:1;font-family:monospace;font-size:12px;
+          color:${r.active?"var(--text)":"var(--muted)"};word-break:break-all;line-height:1.4">
+          ${r.email}${r.name?`<br/><span style="font-size:10px;color:var(--dim)">${r.name}</span>`:""}
+        </span>
+        <button onclick="removeRec(${r.id})" style="background:none;border:none;
+          color:var(--muted);cursor:pointer;font-size:18px;padding:4px;flex-shrink:0">×</button>
+      </div>`;
+  }).join("");
+}
+
+function toggleRec(id){const r=state.recipients.find(r=>r.id===id);if(r)r.active=!r.active;renderRecipients();updateStartBtn();}
+function removeRec(id){state.recipients=state.recipients.filter(r=>r.id!==id);renderRecipients();updateStartBtn();}
+function toggleAll(){const allOn=state.recipients.every(r=>r.active);state.recipients.forEach(r=>r.active=!allOn);renderRecipients();updateStartBtn();}
+function clearSent(){state.recipients=state.recipients.filter(r=>r.status!=="sent");renderRecipients();updateStartBtn();}
+function clearAll(){state.recipients=[];renderRecipients();updateStartBtn();}
+
+// ── COMPOSE ───────────────────────────────────────────────────────────────────
+function setHtmlMode(val){
+  state.mail.html=val;
+  document.getElementById("mode-text").classList.toggle("active",!val);
+  document.getElementById("mode-html").classList.toggle("active",val);
+  document.getElementById("mail-body").placeholder=val
+    ?"<h1>Bonjour {{name}} !</h1>\n<p>Ton message ici</p>"
+    :"Bonjour {{name}},\n\nTon message ici...";
+}
+
+function renderFromPreview(){
+  const fn=document.getElementById("from-name").value||state.fromName;
+  const u=state.fromEmail||(state.mode==="smtp"
+    ?document.getElementById("smtp-user").value
+    :document.getElementById("resend-from-email").value);
+  const el=document.getElementById("from-preview");
+  const tx=document.getElementById("from-preview-text");
+  if(state.validated&&u){el.style.display="block";tx.textContent=fn?`"${fn}" <${u}>`:u;}
+  else el.style.display="none";
+}
+
+function renderListWarn(){
+  document.getElementById("list-smtp-warn").style.display=state.validated?"none":"flex";
+}
+
+// ── SEND ──────────────────────────────────────────────────────────────────────
+function updateStartBtn(){
+  const pending=state.recipients.filter(r=>r.active&&r.status!=="sent").length;
+  const btn=document.getElementById("btn-start");
+  btn.textContent=`▶ Lancer (${pending} mail${pending>1?"s":""})`;
+  btn.disabled=pending===0;
+}
+
+function getActiveConfig(){
+  if(state.activeProfileId){
+    const p=state.profiles.find(p=>p.id===state.activeProfileId);
+    if(p)return{mode:p.mode,smtp:p.smtp,resendKey:p.resendKey,fromEmail:p.fromEmail,fromName:p.fromName};
+  }
+  return{mode:state.mode,smtp:state.smtp,resendKey:state.resendKey,fromEmail:state.fromEmail,fromName:state.fromName};
+}
+
+async function startSend(){
+  state.mail.subject=document.getElementById("mail-subject").value;
+  state.mail.body   =document.getElementById("mail-body").value;
+  if(!state.validated){addLog("⚠ Sélectionne un profil ou configure une connexion","error");switchTab("profiles");return;}
+  if(!state.mail.subject){addLog("Le sujet est obligatoire","error");switchTab("compose");return;}
+  const targets=state.recipients.filter(r=>r.active&&r.status!=="sent");
+  if(!targets.length){addLog("Aucun destinataire actif","warn");return;}
+
+  clearLogs();state.logIndex=0;
+  const cfg=getActiveConfig();
+
+  try{
+    const r=await fetch("/api/queue/start",{
+      method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({
+        mode:cfg.mode,smtp:cfg.smtp,resendKey:cfg.resendKey,
+        fromEmail:cfg.fromEmail,fromName:cfg.fromName,
+        mail:state.mail,recipients:targets,delayMs:state.delayMs,
+      }),
+    });
+    const data=await r.json();
+    if(!data.success){addLog(`Erreur: ${data.error}`,"error");return;}
+
+    addLog(`⚡ Envoi démarré — ${targets.length} destinataires`,"success");
+    addLog(`Tu peux fermer l'app, l'envoi continue sur le serveur`,"info");
+    document.getElementById("bg-badge").style.display        ="inline-flex";
+    setBadge("running","RUNNING","var(--cyan)");
+    document.getElementById("btn-start").style.display       ="none";
+    document.getElementById("btn-pause").style.display       ="block";
+    document.getElementById("btn-stop").style.display        ="block";
+    document.getElementById("btn-reset").style.display       ="none";
+    document.getElementById("progress-bar-wrap").style.display="block";
+    document.getElementById("progress-info").style.display   ="block";
+    document.getElementById("console-empty").style.display   ="none";
+    document.getElementById("console-cmd").style.display     ="block";
+    document.getElementById("console-cmd").textContent=
+      `$ mailer --mode ${cfg.mode} --batch ${targets.length} --delay ${state.delayMs}ms`;
+    document.getElementById("cursor").style.display="block";
+    if(window.innerWidth<768)
+      document.getElementById("right-panel").scrollIntoView({behavior:"smooth"});
+    startPolling();
+  }catch(err){addLog(`Erreur réseau : ${err.message}`,"error");}
+}
+
+// ── POLLING ───────────────────────────────────────────────────────────────────
+function startPolling(){stopPolling();state.pollInterval=setInterval(pollStatus,2000);}
+function stopPolling(){if(state.pollInterval){clearInterval(state.pollInterval);state.pollInterval=null;}}
+
+async function pollStatus(){
+  try{
+    const r=await fetch(`/api/queue/status?since=${state.logIndex}`);
+    const data=await r.json();
+    if(data.newLogs&&data.newLogs.length>0){
+      data.newLogs.forEach(log=>addLog(log.msg,log.level));
+      state.logIndex=data.logCount;
+    }
+    if(data.recipients&&data.recipients.length>0){
+      data.recipients.forEach(sr=>{
+        const lr=state.recipients.find(r=>r.id===sr.id);
+        if(lr)lr.status=sr.status;
+      });
+      renderRecipients();
+    }
+    if(data.total>0)updateProgressValues(data.sent,data.failed,data.total);
+    if(data.status==="done"){
+      stopPolling();
+      document.getElementById("cursor").style.display ="none";
+      document.getElementById("bg-badge").style.display="none";
+      document.getElementById("btn-pause").style.display ="none";
+      document.getElementById("btn-resume").style.display="none";
+      document.getElementById("btn-stop").style.display  ="none";
+      document.getElementById("btn-reset").style.display ="block";
+      setBadge("done","DONE","var(--green)");
+      showDoneBar(data.sent,data.failed,data.total);
+    }else if(data.status==="error"){
+      stopPolling();
+      document.getElementById("cursor").style.display ="none";
+      document.getElementById("bg-badge").style.display="none";
+      document.getElementById("btn-start").style.display="block";
+      document.getElementById("btn-pause").style.display="none";
+      document.getElementById("btn-stop").style.display ="none";
+      setBadge("error","ERROR","var(--red)");
+    }else if(data.status==="paused"){
+      setBadge("paused","PAUSED","var(--orange)");
+      document.getElementById("btn-pause").style.display ="none";
+      document.getElementById("btn-resume").style.display="block";
+    }else if(data.status==="running"){
+      setBadge("running","RUNNING","var(--cyan)");
+      document.getElementById("btn-pause").style.display ="block";
+      document.getElementById("btn-resume").style.display="none";
+    }else if(data.status==="idle"){
+      stopPolling();
+      document.getElementById("bg-badge").style.display  ="none";
+      document.getElementById("cursor").style.display    ="none";
+      document.getElementById("btn-start").style.display ="block";
+      document.getElementById("btn-pause").style.display ="none";
+      document.getElementById("btn-resume").style.display="none";
+      document.getElementById("btn-stop").style.display  ="none";
+      setBadge("idle","IDLE","var(--muted)");
+    }
+  }catch(e){}
+}
+
+async function pauseSend(){await fetch("/api/queue/pause",{method:"POST"});}
+async function resumeSend(){await fetch("/api/queue/resume",{method:"POST"});}
+async function stopSend(){
+  await fetch("/api/queue/stop",{method:"POST"});
+  stopPolling();
+  document.getElementById("bg-badge").style.display   ="none";
+  document.getElementById("cursor").style.display     ="none";
+  document.getElementById("btn-pause").style.display  ="none";
+  document.getElementById("btn-resume").style.display ="none";
+  document.getElementById("btn-stop").style.display   ="none";
+  document.getElementById("btn-reset").style.display  ="block";
+  setBadge("idle","IDLE","var(--muted)");
+  addLog("⏹ Envoi stoppé","warn");
+}
+
+async function resetAll(){
+  await fetch("/api/queue/reset",{method:"POST"});
+  stopPolling();
+  state.recipients.forEach(r=>r.status="pending");
+  renderRecipients();updateStartBtn();
+  setBadge("idle","IDLE","var(--muted)");
+  document.getElementById("btn-start").style.display         ="block";
+  document.getElementById("btn-pause").style.display         ="none";
+  document.getElementById("btn-resume").style.display        ="none";
+  document.getElementById("btn-stop").style.display          ="none";
+  document.getElementById("btn-reset").style.display         ="none";
+  document.getElementById("progress-bar-wrap").style.display ="none";
+  document.getElementById("progress-info").style.display     ="none";
+  document.getElementById("done-bar").style.display          ="none";
+  document.getElementById("bg-badge").style.display          ="none";
+  document.getElementById("cursor").style.display            ="none";
+}
+
+// ── UI HELPERS ────────────────────────────────────────────────────────────────
+function setBadge(status,label,color){
+  const dot=document.getElementById("badge-dot");
+  const txt=document.getElementById("badge-text");
+  const anim=["running","testing"].includes(status);
+  dot.style.background=color;
+  dot.style.boxShadow=anim?`0 0 8px ${color}`:"none";
+  dot.style.animation=anim?"pulse 1s infinite":"none";
+  txt.style.color=color;txt.textContent=label;
+}
+
+function updateProgressValues(sent,failed,total){
+  const pct=total>0?Math.round((sent+failed)/total*100):0;
+  document.getElementById("prog-bar").style.width     =pct+"%";
+  document.getElementById("prog-fraction").textContent=`${sent+failed} / ${total}`;
+  document.getElementById("prog-sent").textContent    =`✓ ${sent}`;
+  document.getElementById("prog-failed").textContent  =`✗ ${failed}`;
+  document.getElementById("progress-info").innerHTML  =
+    `<span style="color:var(--green)">✓${sent}</span>/<span style="color:var(--red)">✗${failed}</span>/${total}`;
+}
+
+function showDoneBar(sent,failed,total){
+  document.getElementById("done-bar").style.display="block";
+  const dm=state.delayMs;
+  const dLabel=dm>=60000?`${Math.round(dm/60000)}min`:`${Math.round(dm/1000)}s`;
+  document.getElementById("done-stats").innerHTML=[
+    {l:"MODE",    v:state.mode==="resend"?"Resend":"SMTP",c:state.mode==="resend"?"var(--purple)":"var(--cyan)"},
+    {l:"ENVOYÉS", v:sent,  c:"var(--green)"},
+    {l:"ÉCHECS",  v:failed,c:failed>0?"var(--red)":"var(--muted)"},
+    {l:"TOTAL",   v:total, c:"var(--dim)"},
+    {l:"DÉLAI",   v:dLabel,c:"var(--dim)"},
+  ].map(s=>`
+    <div>
+      <div style="font-size:9px;font-family:monospace;color:var(--muted);letter-spacing:.1em">${s.l}</div>
+      <div style="font-size:13px;font-family:monospace;color:${s.c};font-weight:700">${s.v}</div>
+    </div>`).join("");
+}
+
+function addLog(msg,level="info"){
+  document.getElementById("console-empty").style.display="none";
+  const col=level==="success"?"var(--green)":level==="error"?"var(--red)"
+    :level==="warn"?"var(--orange)":level==="dim"?"var(--muted)":"var(--cyan)";
+  const now=new Date();
+  const t=[now.getHours(),now.getMinutes(),now.getSeconds()]
+    .map(v=>String(v).padStart(2,"0")).join(":");
+  const line=document.createElement("div");
+  line.style.cssText="display:flex;gap:8px;margin-bottom:4px;font-family:monospace;font-size:12px;line-height:1.5";
+  line.innerHTML=`
+    <span style="color:var(--muted);min-width:62px;flex-shrink:0">${t}</span>
+    <span style="color:var(--muted);flex-shrink:0">›</span>
+    <span style="color:${col};word-break:break-all">${msg}</span>`;
+  document.getElementById("log-lines").appendChild(line);
+  const con=document.getElementById("console");
+  con.scrollTop=con.scrollHeight;
+}
+
+function clearLogs(){
+  document.getElementById("log-lines").innerHTML="";
+  document.getElementById("console-cmd").style.display="none";
+  document.getElementById("cursor").style.display="none";
+  document.getElementById("console-empty").style.display="flex";
+}
+
+// ── INIT ──────────────────────────────────────────────────────────────────────
+switchTab("profiles");
+updateStartBtn();
+updateDelayLabel();
+loadProfiles();
+
+(async()=>{
+  try{
+    const r=await fetch("/api/queue/status?since=0");
+    const data=await r.json();
+    if(data.status==="running"||data.status==="paused"){
+      addLog("⚡ Envoi en cours détecté — reconnexion...","success");
+      document.getElementById("bg-badge").style.display       ="inline-flex";
+      document.getElementById("btn-start").style.display      ="none";
+      document.getElementById("btn-pause").style.display      =data.status==="running"?"block":"none";
+      document.getElementById("btn-resume").style.display     =data.status==="paused"?"block":"none";
+      document.getElementById("btn-stop").style.display       ="block";
+      document.getElementById("progress-bar-wrap").style.display="block";
+      document.getElementById("progress-info").style.display  ="block";
+      document.getElementById("console-empty").style.display  ="none";
+      document.getElementById("console-cmd").style.display    ="block";
+      document.getElementById("cursor").style.display         ="block";
+      if(data.total>0)updateProgressValues(data.sent,data.failed,data.total);
+      if(data.newLogs){data.newLogs.forEach(l=>addLog(l.msg,l.level));state.logIndex=data.logCount;}
+      setBadge(data.status,data.status.toUpperCase(),"var(--cyan)");
+      startPolling();
+    }
+  }catch(e){}
+})();
+</script>
+</body>
+</html>
