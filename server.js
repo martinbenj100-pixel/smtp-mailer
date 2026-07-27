@@ -11,6 +11,61 @@ app.use(express.static(path.join(__dirname, 'public')));
 let profiles = [];
 let queue = { status: 'idle', recipients: [], logs: [], sent: 0, failed: 0, total: 0 };
 
+// ─────────────────────────────────────────────────────
+// HELPER RESEND — envoi via API HTTPS (contourne le blocage SMTP de Render)
+// ─────────────────────────────────────────────────────
+async function sendViaResend({ apiKey, fromEmail, fromName, to, subject, text, html }) {
+  if (!apiKey) throw new Error('Clé API Resend manquante');
+  if (!fromEmail) throw new Error('From Email manquant (domaine vérifié Resend)');
+
+  const from = fromName ? `${fromName} <${fromEmail}>` : fromEmail;
+
+  const payload = { from, to: [to], subject };
+  if (html) payload.html = html;
+  else payload.text = text || '';
+
+  const res = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(payload)
+  });
+
+  const data = await res.json().catch(() => ({}));
+
+  if (!res.ok) {
+    const msg = data?.message || data?.error || `HTTP ${res.status}`;
+    throw new Error(msg);
+  }
+
+  return data; // { id: '...' }
+}
+
+// ─────────────────────────────────────────────────────
+// HELPER SMTP — envoi via nodemailer
+// ─────────────────────────────────────────────────────
+async function sendViaSmtp({ smtp, fromEmail, fromName, to, subject, text, html }) {
+  const transporter = nodemailer.createTransport({
+    host: smtp.host,
+    port: parseInt(smtp.port),
+    secure: smtp.secure === true,
+    auth: { user: smtp.user, pass: smtp.pass },
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 15000
+  });
+
+  return transporter.sendMail({
+    from: fromName ? `"${fromName}" <${fromEmail}>` : fromEmail,
+    to,
+    subject,
+    text: html ? undefined : text,
+    html: html ? html : undefined
+  });
+}
+
 // ── PROFILS ──────────────────────────────────────────
 app.get('/api/profiles', (req, res) => {
   res.json({ success: true, profiles });
@@ -34,18 +89,26 @@ app.post('/api/profiles/:id/test', async (req, res) => {
     if (!profile) return res.json({ success: false, error: 'Profil non trouvé' });
 
     const { testEmail } = req.body;
-    const { mode, smtp, fromEmail, fromName } = profile;
+    if (!testEmail || !testEmail.includes('@')) {
+      return res.json({ success: false, detail: 'Email de test invalide' });
+    }
 
-    if (mode === 'smtp') {
-      const transporter = nodemailer.createTransport({
-        host: smtp.host,
-        port: parseInt(smtp.port),
-        secure: smtp.secure,
-        auth: { user: smtp.user, pass: smtp.pass }
+    const { mode, smtp, resendKey, fromEmail, fromName } = profile;
+
+    if (mode === 'resend') {
+      await sendViaResend({
+        apiKey: resendKey,
+        fromEmail,
+        fromName,
+        to: testEmail,
+        subject: '🧪 Test SMTP Mailer',
+        text: 'Cet email confirme que votre connexion Resend fonctionne parfaitement.'
       });
-
-      await transporter.sendMail({
-        from: fromName ? `"${fromName}" <${fromEmail}>` : fromEmail,
+    } else {
+      await sendViaSmtp({
+        smtp,
+        fromEmail,
+        fromName,
         to: testEmail,
         subject: '🧪 Test SMTP Mailer',
         text: 'Cet email confirme que votre connexion SMTP fonctionne parfaitement.'
@@ -61,14 +124,30 @@ app.post('/api/profiles/:id/test', async (req, res) => {
 // ── TEST DE CONNEXION ──────────────────────────────────
 app.post('/api/test', async (req, res) => {
   try {
-    const { mode, smtp, fromEmail, fromName, testEmail } = req.body;
+    const { mode, smtp, resendKey, fromEmail, fromName, testEmail } = req.body;
 
     if (!testEmail || !testEmail.includes('@')) {
       return res.json({ success: false, detail: 'Email de test invalide' });
     }
 
-    if (mode === 'smtp') {
-      if (!smtp.host || !smtp.port || !smtp.user || !smtp.pass) {
+    if (mode === 'resend') {
+      if (!resendKey) {
+        return res.json({ success: false, detail: 'Clé API Resend manquante' });
+      }
+      if (!fromEmail) {
+        return res.json({ success: false, detail: 'From Email manquant (domaine vérifié Resend)' });
+      }
+
+      await sendViaResend({
+        apiKey: resendKey,
+        fromEmail,
+        fromName,
+        to: testEmail,
+        subject: '🧪 Test SMTP Mailer',
+        text: 'Cet email confirme que votre connexion Resend fonctionne.'
+      });
+    } else {
+      if (!smtp || !smtp.host || !smtp.port || !smtp.user || !smtp.pass) {
         return res.json({ success: false, detail: 'Config SMTP incomplète' });
       }
 
@@ -76,7 +155,10 @@ app.post('/api/test', async (req, res) => {
         host: smtp.host,
         port: parseInt(smtp.port),
         secure: smtp.secure === true,
-        auth: { user: smtp.user, pass: smtp.pass }
+        auth: { user: smtp.user, pass: smtp.pass },
+        connectionTimeout: 10000,
+        greetingTimeout: 10000,
+        socketTimeout: 15000
       });
 
       await transporter.verify();
@@ -120,6 +202,7 @@ app.post('/api/queue/start', async (req, res) => {
     status: 'running',
     mode: req.body.mode,
     smtp: req.body.smtp,
+    resendKey: req.body.resendKey,
     fromEmail: req.body.fromEmail,
     fromName: req.body.fromName,
     mail: req.body.mail,
@@ -131,7 +214,7 @@ app.post('/api/queue/start', async (req, res) => {
     logs: []
   };
 
-  addQueueLog(`⚡ Envoi démarré — ${queue.total} destinataire(s)`, 'success');
+  addQueueLog(`⚡ Envoi démarré — ${queue.total} destinataire(s) [${queue.mode}]`, 'success');
   res.json({ success: true });
 
   // Lance l'envoi en arrière-plan
@@ -142,6 +225,22 @@ app.post('/api/queue/start', async (req, res) => {
 });
 
 async function processQueue() {
+  // Pour le mode SMTP on réutilise un seul transporter (pool) : plus rapide, moins de timeouts
+  let smtpTransporter = null;
+  if (queue.mode !== 'resend') {
+    smtpTransporter = nodemailer.createTransport({
+      host: queue.smtp.host,
+      port: parseInt(queue.smtp.port),
+      secure: queue.smtp.secure === true,
+      auth: { user: queue.smtp.user, pass: queue.smtp.pass },
+      pool: true,
+      maxConnections: 1,
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 15000
+    });
+  }
+
   for (let i = 0; i < queue.recipients.length; i++) {
     if (queue.status === 'stopped') break;
     if (queue.status === 'paused') await waitForResume();
@@ -151,22 +250,28 @@ async function processQueue() {
 
     try {
       rec.status = 'sending';
-      const body = queue.mail.body.replace(/{{name}}/g, rec.name || rec.email.split('@')[0]);
+      const name = rec.name || rec.email.split('@')[0];
+      const body = (queue.mail.body || '').replace(/{{name}}/g, name);
 
-      const transporter = nodemailer.createTransport({
-        host: queue.smtp.host,
-        port: parseInt(queue.smtp.port),
-        secure: queue.smtp.secure === true,
-        auth: { user: queue.smtp.user, pass: queue.smtp.pass }
-      });
-
-      await transporter.sendMail({
-        from: queue.fromName ? `"${queue.fromName}" <${queue.fromEmail}>` : queue.fromEmail,
-        to: rec.email,
-        subject: queue.mail.subject,
-        text: queue.mail.html ? undefined : body,
-        html: queue.mail.html ? body : undefined
-      });
+      if (queue.mode === 'resend') {
+        await sendViaResend({
+          apiKey: queue.resendKey,
+          fromEmail: queue.fromEmail,
+          fromName: queue.fromName,
+          to: rec.email,
+          subject: queue.mail.subject,
+          text: queue.mail.html ? undefined : body,
+          html: queue.mail.html ? body : undefined
+        });
+      } else {
+        await smtpTransporter.sendMail({
+          from: queue.fromName ? `"${queue.fromName}" <${queue.fromEmail}>` : queue.fromEmail,
+          to: rec.email,
+          subject: queue.mail.subject,
+          text: queue.mail.html ? undefined : body,
+          html: queue.mail.html ? body : undefined
+        });
+      }
 
       rec.status = 'sent';
       queue.sent++;
@@ -174,12 +279,14 @@ async function processQueue() {
     } catch (err) {
       rec.status = 'error';
       queue.failed++;
-      addQueueLog(`✗ ${rec.email} — ${err.message.substring(0, 50)}`, 'error');
+      addQueueLog(`✗ ${rec.email} — ${err.message.substring(0, 80)}`, 'error');
     }
 
     // Délai avant le prochain email
     await new Promise(resolve => setTimeout(resolve, queue.delayMs));
   }
+
+  if (smtpTransporter) smtpTransporter.close();
 
   queue.status = 'done';
   addQueueLog(`✅ Envoi terminé — ${queue.sent} réussi(s), ${queue.failed} échoué(s)`, 'success');

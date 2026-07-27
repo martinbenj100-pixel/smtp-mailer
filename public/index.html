@@ -215,7 +215,7 @@
       <div id="tab-config" style="display:none">
         <div class="field">
           <label class="lbl">Nom du profil</label>
-          <input id="profile-name" placeholder="ex: Gmail Pro / Resend Domain1 / Bluewin"/>
+          <input id="profile-name" placeholder="ex: Gmail Pro / AWS / Bluewin"/>
           <div class="hint">Pour retrouver facilement cette connexion</div>
         </div>
         <div class="divider"></div>
@@ -223,7 +223,7 @@
           <button class="mode-btn active-smtp" id="mode-smtp-btn"
             onclick="setMode('smtp')">⚙ SMTP</button>
           <button class="mode-btn" id="mode-resend-btn"
-            onclick="setMode('resend')">⚡ Resend API</button>
+            onclick="setMode('resend')">⚡ AWS</button>
         </div>
 
         <div id="smtp-fields">
@@ -275,19 +275,19 @@
           <div style="padding:12px;border-radius:6px;background:rgba(168,85,247,.08);
             border:1px solid rgba(168,85,247,.3);margin-bottom:16px;
             font-family:monospace;font-size:12px;color:var(--purple);line-height:1.6">
-            ⚡ Resend API — meilleure délivrabilité, moins de spam
+            ⚡ AWS API — meilleure délivrabilité, moins de spam
           </div>
           <div class="field">
-            <label class="lbl">Clé API Resend</label>
+            <label class="lbl">Clé API AWS</label>
             <input id="resend-key" type="password" placeholder="re_xxxxxxxxxxxxxxxxxx"
               oninput="configChanged()" autocapitalize="none"/>
-            <div class="hint">Disponible sur resend.com → API Keys</div>
+            <div class="hint"></div>
           </div>
           <div class="field">
             <label class="lbl">From Email</label>
             <input id="resend-from-email" placeholder="toi@tondomaine.com"
               oninput="configChanged()" type="email" autocapitalize="none"/>
-            <div class="hint">Doit être un domaine vérifié sur Resend</div>
+            <div class="hint"></div>
           </div>
         </div>
 
@@ -492,7 +492,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
-<title>SMTP Mailer</title>
+<title>PRIVATE YODA MAILER</title>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   :root{
@@ -703,7 +703,7 @@
       <div id="tab-config" style="display:none">
         <div class="field">
           <label class="lbl">Nom du profil</label>
-          <input id="profile-name" placeholder="ex: Gmail Pro / Resend Domain1 / Bluewin"/>
+          <input id="profile-name" placeholder="ex: Gmail Pro / AWS / Bluewin"/>
           <div class="hint">Pour retrouver facilement cette connexion</div>
         </div>
         <div class="divider"></div>
@@ -711,7 +711,7 @@
           <button class="mode-btn active-smtp" id="mode-smtp-btn"
             onclick="setMode('smtp')">⚙ SMTP</button>
           <button class="mode-btn" id="mode-resend-btn"
-            onclick="setMode('resend')">⚡ Resend API</button>
+            onclick="setMode('resend')">⚡ AWS API</button>
         </div>
 
         <div id="smtp-fields">
@@ -766,16 +766,16 @@
             ⚡ Resend API — meilleure délivrabilité, moins de spam
           </div>
           <div class="field">
-            <label class="lbl">Clé API Resend</label>
+            <label class="lbl">Clé API AWS</label>
             <input id="resend-key" type="password" placeholder="re_xxxxxxxxxxxxxxxxxx"
               oninput="configChanged()" autocapitalize="none"/>
-            <div class="hint">Disponible sur resend.com → API Keys</div>
+            <div class="hint"></div>
           </div>
           <div class="field">
             <label class="lbl">From Email</label>
             <input id="resend-from-email" placeholder="toi@tondomaine.com"
               oninput="configChanged()" type="email" autocapitalize="none"/>
-            <div class="hint">Doit être un domaine vérifié sur Resend</div>
+            <div class="hint"></div>
           </div>
         </div>
 
@@ -1744,6 +1744,355 @@ loadProfiles();
     }
   }catch(e){}
 })();
-</script>
+</script>const express = require('express');
+const admin = require('firebase-admin');
+const nodemailer = require('nodemailer');
+const path = require('path');
+require('dotenv').config();
+
+const app = express();
+app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
+
+// ── FIREBASE SETUP ────────────────────────────────────
+const firebaseConfig = {
+  apiKey: process.env.FIREBASE_API_KEY,
+  authDomain: process.env.FIREBASE_AUTH_DOMAIN,
+  projectId: process.env.FIREBASE_PROJECT_ID,
+  storageBucket: process.env.FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: process.env.FIREBASE_MESSAGING_SENDER_ID,
+  appId: process.env.FIREBASE_APP_ID
+};
+
+// Service Account pour le backend
+const serviceAccount = {
+  type: "service_account",
+  project_id: process.env.FIREBASE_PROJECT_ID,
+  private_key_id: process.env.FIREBASE_PRIVATE_KEY_ID,
+  private_key: process.env.FIREBASE_PRIVATE_KEY ? process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n') : '',
+  client_email: process.env.FIREBASE_CLIENT_EMAIL,
+  client_id: process.env.FIREBASE_CLIENT_ID,
+  auth_uri: "https://accounts.google.com/o/oauth2/auth",
+  token_uri: "https://oauth2.googleapis.com/token",
+  auth_provider_x509_cert_url: "https://www.googleapis.com/oauth2/v1/certs"
+};
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+  databaseURL: `https://${process.env.FIREBASE_PROJECT_ID}.firebaseio.com`
+});
+
+const db = admin.firestore();
+const auth = admin.auth();
+
+console.log('🔥 Firebase initialized');
+
+// ── MIDDLEWARE - Vérifier token ──────────────────────
+const verifyToken = async (req, res, next) => {
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  if (!token) return res.status(401).json({ success: false, error: 'Token required' });
+
+  try {
+    const decodedToken = await admin.auth().verifyIdToken(token);
+    req.user = decodedToken;
+    next();
+  } catch (err) {
+    res.status(401).json({ success: false, error: 'Invalid token' });
+  }
+};
+
+// ── API ENDPOINTS ────────────────────────────────────
+// Health check
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// Créer/mettre à jour profil utilisateur au premier login
+app.post('/api/auth/user-setup', verifyToken, async (req, res) => {
+  try {
+    const userRef = db.collection('users').doc(req.user.uid);
+    const userDoc = await userRef.get();
+
+    if (!userDoc.exists) {
+      // Premier login - crée le profil avec essai 30 jours
+      await userRef.set({
+        email: req.user.email,
+        username: req.user.email.split('@')[0],
+        trialStart: new Date(),
+        trialDays: 30,
+        isActive: true,
+        createdAt: new Date()
+      });
+    }
+
+    // Récupère les infos d'essai
+    const userData = await userRef.get();
+    const trialStart = new Date(userData.data().trialStart.toDate());
+    const now = new Date();
+    const daysElapsed = Math.floor((now - trialStart) / (1000 * 60 * 60 * 24));
+    const daysRemaining = Math.max(0, userData.data().trialDays - daysElapsed);
+
+    res.json({
+      success: true,
+      user: {
+        uid: req.user.uid,
+        email: req.user.email
+      },
+      daysRemaining,
+      isExpired: daysRemaining <= 0
+    });
+  } catch (err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
+// Récupérer info d'essai
+app.get('/api/auth/trial-info', verifyToken, async (req, res) => {
+  try {
+    const userRef = db.collection('users').doc(req.user.uid);
+    const userDoc = await userRef.get();
+
+    if (!userDoc.exists) {
+      return res.json({ success: false, error: 'User not found' });
+    }
+
+    const userData = userDoc.data();
+    const trialStart = new Date(userData.trialStart.toDate());
+    const now = new Date();
+    const daysElapsed = Math.floor((now - trialStart) / (1000 * 60 * 60 * 24));
+    const daysRemaining = Math.max(0, userData.trialDays - daysElapsed);
+
+    res.json({
+      success: true,
+      trialStart: trialStart.toISOString().split('T')[0],
+      daysRemaining,
+      isExpired: daysRemaining <= 0,
+      progress: Math.min(100, (daysElapsed / userData.trialDays) * 100)
+    });
+  } catch (err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
+// Récupérer les profils de l'utilisateur
+app.get('/api/profiles', verifyToken, async (req, res) => {
+  try {
+    const profilesRef = db.collection('users').doc(req.user.uid).collection('profiles');
+    const snapshot = await profilesRef.get();
+    const profiles = [];
+    snapshot.forEach(doc => {
+      profiles.push({ id: doc.id, ...doc.data() });
+    });
+    res.json({ success: true, profiles });
+  } catch (err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
+// Créer un profil
+app.post('/api/profiles', verifyToken, async (req, res) => {
+  try {
+    const p = req.body;
+    const profileRef = db.collection('users').doc(req.user.uid).collection('profiles').doc();
+    
+    await profileRef.set({
+      name: p.name,
+      mode: p.mode,
+      smtpHost: p.smtp?.host,
+      smtpPort: p.smtp?.port,
+      smtpSecure: p.smtp?.secure,
+      smtpUser: p.smtp?.user,
+      smtpPass: p.smtp?.pass,
+      fromEmail: p.fromEmail,
+      fromName: p.fromName,
+      subject: p.subject,
+      body: p.body,
+      createdAt: new Date()
+    });
+
+    res.json({ success: true, profile: { id: profileRef.id, ...p } });
+  } catch (err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
+// Supprimer un profil
+app.delete('/api/profiles/:id', verifyToken, async (req, res) => {
+  try {
+    await db.collection('users').doc(req.user.uid).collection('profiles').doc(req.params.id).delete();
+    res.json({ success: true });
+  } catch (err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
+// ── TEST SMTP ────────────────────────────────────────
+app.post('/api/test', verifyToken, async (req, res) => {
+  try {
+    const { mode, smtp, fromEmail, fromName, testEmail } = req.body;
+
+    if (!testEmail || !testEmail.includes('@')) {
+      return res.json({ success: false, detail: 'Email invalide' });
+    }
+
+    if (mode === 'smtp') {
+      if (!smtp.host || !smtp.port || !smtp.user || !smtp.pass) {
+        return res.json({ success: false, detail: 'Config SMTP incomplète' });
+      }
+
+      const transporter = nodemailer.createTransport({
+        host: smtp.host,
+        port: parseInt(smtp.port),
+        secure: smtp.secure === true,
+        auth: { user: smtp.user, pass: smtp.pass }
+      });
+
+      await transporter.verify();
+      await transporter.sendMail({
+        from: fromName ? `"${fromName}" <${fromEmail}>` : fromEmail,
+        to: testEmail,
+        subject: '🧪 Test NEONMAILER by YODA',
+        text: 'Connexion SMTP réussie! 🔥',
+        html: '<h2>Connexion SMTP réussie! 🔥</h2>'
+      });
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    res.json({ success: false, detail: err.message });
+  }
+});
+
+// ── QUEUE (simplifié) ────────────────────────────────
+let queue = { status: 'idle', recipients: [], logs: [], sent: 0, failed: 0, total: 0 };
+
+app.get('/api/queue/status', verifyToken, (req, res) => {
+  const since = parseInt(req.query.since || 0);
+  res.json({
+    status: queue.status,
+    sent: queue.sent,
+    failed: queue.failed,
+    total: queue.total,
+    newLogs: queue.logs.slice(since),
+    logCount: queue.logs.length,
+    recipients: queue.recipients || []
+  });
+});
+
+app.post('/api/queue/start', verifyToken, async (req, res) => {
+  if (queue.status === 'running') {
+    return res.json({ success: false, error: 'Envoi déjà en cours' });
+  }
+
+  queue = {
+    status: 'running',
+    mode: req.body.mode,
+    smtp: req.body.smtp,
+    fromEmail: req.body.fromEmail,
+    fromName: req.body.fromName,
+    mail: req.body.mail,
+    recipients: req.body.recipients.map(r => ({ ...r, status: 'pending' })),
+    delayMs: req.body.delayMs,
+    sent: 0,
+    failed: 0,
+    total: req.body.recipients.length,
+    logs: []
+  };
+
+  queue.logs.push({ msg: `⚡ Envoi démarré — ${queue.total} destinataires`, level: 'success' });
+  res.json({ success: true });
+
+  processQueue();
+});
+
+async function processQueue() {
+  for (let i = 0; i < queue.recipients.length; i++) {
+    if (queue.status === 'stopped') break;
+    if (queue.status === 'paused') await waitForResume();
+
+    const rec = queue.recipients[i];
+    if (rec.status === 'sent') continue;
+
+    try {
+      rec.status = 'sending';
+      const body = queue.mail.body.replace(/{{name}}/g, rec.name || rec.email.split('@')[0]);
+
+      const transporter = nodemailer.createTransport({
+        host: queue.smtp.host,
+        port: parseInt(queue.smtp.port),
+        secure: queue.smtp.secure === true,
+        auth: { user: queue.smtp.user, pass: queue.smtp.pass }
+      });
+
+      await transporter.sendMail({
+        from: queue.fromName ? `"${queue.fromName}" <${queue.fromEmail}>` : queue.fromEmail,
+        to: rec.email,
+        subject: queue.mail.subject,
+        text: queue.mail.html ? undefined : body,
+        html: queue.mail.html ? body : undefined
+      });
+
+      rec.status = 'sent';
+      queue.sent++;
+      queue.logs.push({ msg: `✓ ${rec.email}`, level: 'success' });
+    } catch (err) {
+      rec.status = 'error';
+      queue.failed++;
+      queue.logs.push({ msg: `✗ ${rec.email} — ${err.message.substring(0, 50)}`, level: 'error' });
+    }
+
+    await new Promise(resolve => setTimeout(resolve, queue.delayMs));
+  }
+
+  queue.status = 'done';
+  queue.logs.push({ msg: `✅ Envoi terminé — ${queue.sent} réussi(s), ${queue.failed} échoué(s)`, level: 'success' });
+}
+
+function waitForResume() {
+  return new Promise(resolve => {
+    const check = setInterval(() => {
+      if (queue.status !== 'paused') {
+        clearInterval(check);
+        resolve();
+      }
+    }, 500);
+  });
+}
+
+app.post('/api/queue/pause', verifyToken, (req, res) => {
+  queue.status = 'paused';
+  queue.logs.push({ msg: '⏸ Envoi en pause', level: 'warn' });
+  res.json({ success: true });
+});
+
+app.post('/api/queue/resume', verifyToken, (req, res) => {
+  queue.status = 'running';
+  queue.logs.push({ msg: '▶ Envoi repris', level: 'info' });
+  res.json({ success: true });
+});
+
+app.post('/api/queue/stop', verifyToken, (req, res) => {
+  queue.status = 'stopped';
+  queue.logs.push({ msg: '⏹ Envoi stoppé', level: 'warn' });
+  res.json({ success: true });
+});
+
+app.post('/api/queue/reset', verifyToken, (req, res) => {
+  queue = { status: 'idle', recipients: [], logs: [], sent: 0, failed: 0, total: 0 };
+  res.json({ success: true });
+});
+
+// ── ROUTE PAR DÉFAUT ──────────────────────────────────
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// ── DÉMARRAGE ──────────────────────────────────────────
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`\n🔥 NEONMAILER by YODA + Firebase lancé sur http://localhost:${PORT}\n`);
+  console.log('   Frontend: http://localhost:' + PORT);
+  console.log('   API: http://localhost:' + PORT + '/api/health\n');
+});
 </body>
 </html>
