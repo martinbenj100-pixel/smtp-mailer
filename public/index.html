@@ -312,6 +312,7 @@
         <div class="box" style="margin-bottom:18px">
           <div style="font-size:10px;font-family:'Courier New',monospace;color:var(--cyan);text-transform:uppercase;letter-spacing:.1em;margin-bottom:10px">⏱ Délai entre chaque envoi</div>
           <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px" id="delay-presets">
+            <button class="chip" onclick="setDelay(0)">0s</button>
             <button class="chip" onclick="setDelay(1000)">1s</button>
             <button class="chip active" onclick="setDelay(5000)">5s</button>
             <button class="chip" onclick="setDelay(15000)">15s</button>
@@ -320,9 +321,9 @@
             <button class="chip" onclick="setDelay(120000)">2min</button>
             <button class="chip" onclick="setDelay(300000)">5min</button>
           </div>
-          <input type="range" id="delay-slider" min="1000" max="300000" step="1000" value="5000" oninput="onSlider(this.value)"/>
+          <input type="range" id="delay-slider" min="0" max="300000" step="1000" value="5000" oninput="onSlider(this.value)"/>
           <div style="display:flex;justify-content:space-between;font-family:'Courier New',monospace;font-size:11px;color:var(--muted);margin-top:6px">
-            <span>1s</span><span id="delay-label" style="color:var(--cyan);font-weight:700">5 sec</span><span>5min</span></div>
+            <span>0s</span><span id="delay-label" style="color:var(--cyan);font-weight:700">5 sec</span><span>5min</span></div>
         </div>
 
         <div id="list-header" style="display:none;margin-bottom:10px">
@@ -729,7 +730,7 @@ function setDelay(ms){
   document.querySelectorAll("#delay-presets .chip").forEach(b=>{const bms=parseInt(b.getAttribute("onclick").match(/\d+/)[0]);b.classList.toggle("active",bms===ms);});
 }
 function onSlider(val){ state.delayMs=parseInt(val); updateDelayLabel(); document.querySelectorAll("#delay-presets .chip").forEach(b=>b.classList.remove("active")); }
-function updateDelayLabel(){ const ms=state.delayMs; document.getElementById("delay-label").textContent=ms>=60000?`${Math.round(ms/60000)} min`:`${Math.round(ms/1000)} sec`; }
+function updateDelayLabel(){ const ms=state.delayMs; document.getElementById("delay-label").textContent=ms===0?"instantané":ms>=60000?`${Math.round(ms/60000)} min`:`${Math.round(ms/1000)} sec`; }
 
 // ══════════════ RECIPIENTS ══════════════
 function parseBulk(){
