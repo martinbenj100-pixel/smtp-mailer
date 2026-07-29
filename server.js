@@ -22,6 +22,16 @@ app.use(express.static(path.join(__dirname, 'public')));
 const ACCESS_CODE = process.env.ACCESS_CODE || 'YODA-2025-CHANGE-MOI';
 const SESSION_TTL = 12 * 60 * 60 * 1000; // 12 h
 const BCC_CHUNK = 45;                     // < limite Resend (50 dest./envoi)
+const RATE_MAX_PER_SEC = 10;              // plafond dur : 10 requêtes/seconde max
+const RATE_MIN_INTERVAL = Math.ceil(1000 / RATE_MAX_PER_SEC); // 100 ms entre 2 départs
+
+// Limiteur de débit : garantit au moins RATE_MIN_INTERVAL ms entre deux requêtes
+let lastSendAt = 0;
+async function rateGate() {
+  const wait = RATE_MIN_INTERVAL - (Date.now() - lastSendAt);
+  if (wait > 0) await new Promise(r => setTimeout(r, wait));
+  lastSendAt = Date.now();
+}
 
 if (ACCESS_CODE === 'YODA-2025-CHANGE-MOI') {
   console.warn('\n⚠  ACCESS_CODE par défaut détecté. Définis ACCESS_CODE dans .env / Render pour sécuriser.\n');
@@ -280,6 +290,7 @@ app.post('/api/queue/start', requireAuth, async (req, res) => {
 
 async function processQueue() {
   const isResend = queue.mode === 'resend';
+  lastSendAt = 0; // réinitialise le limiteur de débit
   let smtpTransporter = null;
   if (!isResend) smtpTransporter = buildSmtpTransporter(queue.smtp, true);
 
@@ -311,6 +322,7 @@ async function processIndividual(isResend, smtpTransporter) {
         html: queue.mail.html ? body : undefined,
         attachments: queue.attachments
       };
+      await rateGate(); // ne jamais dépasser 10 requêtes/seconde
       if (isResend) await sendViaResend({ apiKey: queue.resendKey, ...opts });
       else          await sendViaSmtp(smtpTransporter, opts);
 
@@ -349,6 +361,7 @@ async function processBccMode(isResend, smtpTransporter) {
         html: queue.mail.html ? body : undefined,
         attachments: queue.attachments
       };
+      await rateGate(); // ne jamais dépasser 10 requêtes/seconde
       if (isResend) await sendViaResend({ apiKey: queue.resendKey, ...opts });
       else          await sendViaSmtp(smtpTransporter, opts);
 
