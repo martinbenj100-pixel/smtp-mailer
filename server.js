@@ -179,7 +179,7 @@ const API_PROVIDERS = {
 
   maileroo: {
     label: 'Maileroo',
-    endpoint: 'https://smtp.maileroo.com/api/v2/emails/bulk',
+    endpoint: 'https://smtp.maileroo.com/api/v2/emails',
     headers: k => ({ 'X-API-Key': k, 'Content-Type': 'application/json' }),
     body: m => {
       const p = {
