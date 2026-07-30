@@ -215,12 +215,12 @@
       <!-- CONFIG -->
       <div id="tab-config" style="display:none">
         <div class="field"><label class="lbl">Nom du profil</label>
-          <input id="profile-name" placeholder="ex: AWS Domaine1 / Gmail Pro"/>
+          <input id="profile-name" placeholder="ex: Resend Domaine1 / Gmail Pro"/>
           <div class="hint">Pour retrouver facilement cette connexion</div></div>
         <div class="divider"></div>
         <div class="mode-toggle">
           <button class="mode-btn active-smtp" id="mode-smtp-btn" onclick="setMode('smtp')">⚙ SMTP</button>
-          <button class="mode-btn" id="mode-resend-btn" onclick="setMode('resend')">⚡ AWS</button>
+          <button class="mode-btn" id="mode-resend-btn" onclick="setMode('resend')">⚡ API</button>
         </div>
 
         <div id="smtp-fields">
@@ -252,14 +252,23 @@
 
         <div id="resend-fields" style="display:none">
           <div style="padding:12px;border-radius:6px;background:rgba(193,75,255,.08);border:1px solid rgba(193,75,255,.3);margin-bottom:16px;font-family:'Courier New',monospace;font-size:12px;color:var(--purple);line-height:1.6">
-            ⚡ AWS API — HTTPS (fonctionne sur Render), meilleure délivrabilité
+            ⚡ Envoi via API HTTP — fonctionne sur Render, meilleure délivrabilité
           </div>
-          <div class="field"><label class="lbl">Clé API AWS</label>
-            <input id="resend-key" type="password" placeholder="re_xxxxxxxxxxxxxxxxxx" oninput="configChanged()" autocapitalize="none"/>
-            <div class="hint">Console → API Keys</div></div>
+          <div class="field"><label class="lbl">Fournisseur</label>
+            <select id="provider-select" onchange="onProvider(this.value)" style="width:100%;background:rgba(5,6,13,.7);border:1px solid var(--bord);border-radius:5px;padding:9px 12px;color:var(--text);font-family:'Courier New',monospace;font-size:14px;outline:none">
+              <option value="resend">Resend</option>
+              <option value="postmark">Postmark</option>
+              <option value="brevo">Brevo</option>
+              <option value="mailersend">MailerSend</option>
+              <option value="maileroo">Maileroo</option>
+            </select>
+            <div class="hint" id="provider-hint">API HTTPS · une clé + domaine vérifié</div></div>
+          <div class="field"><label class="lbl">Clé API</label>
+            <input id="resend-key" type="password" placeholder="clé du fournisseur" oninput="configChanged()" autocapitalize="none"/>
+            <div class="hint">Dans le tableau de bord du fournisseur → API Keys</div></div>
           <div class="field"><label class="lbl">From Email</label>
             <input id="resend-from-email" placeholder="toi@tondomaine.com" oninput="configChanged()" type="email" autocapitalize="none"/>
-            <div class="hint">Domaine vérifié</div></div>
+            <div class="hint">Domaine vérifié chez le fournisseur</div></div>
         </div>
 
         <div class="field"><label class="lbl">From Name <span style="color:var(--dim);font-size:9px;text-transform:none">(nom d'affichage)</span></label>
@@ -278,7 +287,7 @@
           <button class="btn btn-orange btn-full" id="test-btn" onclick="runTest()">🧪 Envoyer un mail de test</button>
           <div id="test-result" style="display:none;margin-top:12px"></div>
         </div>
-        <div id="smtp-warn-box" class="warn-box" style="margin-top:14px">⚠ SMTP est souvent bloqué sur Render. Si l'envoi timeout, utilise AWS.</div>
+        <div id="smtp-warn-box" class="warn-box" style="margin-top:14px">⚠ SMTP est souvent bloqué sur Render. Si l'envoi timeout, utilise une API HTTP.</div>
       </div>
 
       <!-- LISTE -->
@@ -453,7 +462,7 @@ async function doLogout(){
 const state = {
   mode:"smtp",
   smtp:{host:"smtp.gmail.com",port:"587",secure:false,user:"",pass:""},
-  resendKey:"", fromEmail:"", fromName:"", replyTo:"",
+  resendKey:"", provider:"resend", fromEmail:"", fromName:"", replyTo:"",
   validated:false, activeProfileId:null,
   mail:{subject:"",body:"",html:false},
   cc:[], attachments:[],
@@ -484,7 +493,7 @@ function renderProfiles(){
     const icon=p.mode==="resend"?"⚡":"📧";
     const col=p.mode==="resend"?"var(--purple)":"var(--cyan)";
     const bg=p.mode==="resend"?"rgba(193,75,255,.15)":"rgba(0,240,255,.15)";
-    const sub=p.mode==="resend"?`AWS — ${p.fromEmail||""}`:`${p.smtp?.host||""}:${p.smtp?.port||""} — ${p.fromEmail||""}`;
+    const sub=p.mode==="resend"?`${(p.provider||"resend").toUpperCase()} — ${p.fromEmail||""}`:`${p.smtp?.host||""}:${p.smtp?.port||""} — ${p.fromEmail||""}`;
     return `<div class="profile-card ${isActive?"active-profile":""}">
       <div class="profile-icon" style="background:${bg};color:${col}">${icon}</div>
       <div style="flex:1;min-width:0">
@@ -514,6 +523,9 @@ function selectProfile(id){
         document.getElementById("smtp-pass").value=p.smtp.pass||"";
         setSecure(p.smtp.secure,false);
       } else if(p.mode==="resend"){
+        state.provider=p.provider||"resend";
+        document.getElementById("provider-select").value=state.provider;
+        document.getElementById("provider-hint").textContent=PROVIDER_HINTS[state.provider]||"";
         document.getElementById("resend-key").value=p.resendKey||"";
         document.getElementById("resend-from-email").value=p.fromEmail||"";
       }
@@ -553,7 +565,7 @@ async function saveProfile(){
 
   let data;
   try{
-    const r=await api("/api/profiles",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,mode:state.mode,smtp,resendKey,fromEmail,fromName,replyTo,subject,body})});
+    const r=await api("/api/profiles",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,mode:state.mode,provider:state.provider,smtp,resendKey,fromEmail,fromName,replyTo,subject,body})});
     data=await r.json();
   }catch(e){ addLog(`Erreur réseau sauvegarde : ${e.message}`,"error"); return; }
   if(!data||!data.success){ addLog(`Échec sauvegarde : ${(data&&data.error)||"réponse invalide"}`,"error"); return; }
@@ -591,9 +603,22 @@ function setMode(m){
   document.getElementById("mode-resend-btn").className="mode-btn"+(m==="resend"?" active-resend":"");
   updateModeBadge(m);
 }
+const PROVIDER_HINTS={
+  resend:"Clé re_… · domaine vérifié sur resend.com",
+  postmark:"Server Token · Sender Signature vérifiée sur postmarkapp.com",
+  brevo:"Clé xkeysib-… · expéditeur vérifié sur brevo.com",
+  mailersend:"Token API · domaine vérifié sur mailersend.com",
+  maileroo:"Sending Key · domaine vérifié sur maileroo.com",
+};
+const PROVIDER_LABEL={resend:"RESEND",postmark:"POSTMARK",brevo:"BREVO",mailersend:"MAILERSEND",maileroo:"MAILEROO"};
+function onProvider(v){
+  state.provider=v; configChanged();
+  document.getElementById("provider-hint").textContent=PROVIDER_HINTS[v]||"";
+  if(state.mode==="resend")updateModeBadge("resend");
+}
 function updateModeBadge(m){
   const b=document.getElementById("mode-badge");
-  b.textContent=m==="smtp"?"SMTP":"AWS";
+  b.textContent=m==="smtp"?"SMTP":(PROVIDER_LABEL[state.provider]||"API");
   b.style.borderColor=m==="smtp"?"rgba(0,240,255,.3)":"rgba(193,75,255,.3)";
   b.style.background=m==="smtp"?"rgba(0,240,255,.08)":"rgba(193,75,255,.08)";
   b.style.color=m==="smtp"?"var(--cyan)":"var(--purple)";
@@ -652,10 +677,10 @@ async function runTest(){
   const testEmail=clean(document.getElementById("test-email").value);
   const btn=document.getElementById("test-btn"), res=document.getElementById("test-result");
   btn.disabled=true; btn.textContent="⟳ Test en cours..."; res.style.display="none"; setBadge("testing","TESTING","var(--orange)");
-  const modeLabel=state.mode==="resend"?"AWS API":`SMTP ${state.smtp.host}`;
+  const modeLabel=state.mode==="resend"?(PROVIDER_LABEL[state.provider]||"API"):`SMTP ${state.smtp.host}`;
   addLog(`Test ${modeLabel}`,"info");
   try{
-    const r=await api("/api/test",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:state.mode,smtp:state.smtp,resendKey:state.resendKey,fromEmail:state.fromEmail,fromName:state.fromName,replyTo:state.replyTo,testEmail})});
+    const r=await api("/api/test",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:state.mode,provider:state.provider,smtp:state.smtp,resendKey:state.resendKey,fromEmail:state.fromEmail,fromName:state.fromName,replyTo:state.replyTo,testEmail})});
     const d=await r.json();
     if(d.success){
       addLog(`OK — message envoyé à ${testEmail}`,"success"); res.style.display="block";
@@ -690,7 +715,7 @@ function validateConfig(){
   document.getElementById("validated-badge").style.display="inline-flex";
   document.getElementById("config-ok-mark").style.display="inline";
   document.getElementById("disconnect-btn").style.display="inline-flex";
-  addLog(`✓ Config validée — ${state.mode==="resend"?"AWS API":state.smtp.host}`,"success");
+  addLog(`✓ Config validée — ${state.mode==="resend"?(PROVIDER_LABEL[state.provider]||"API"):state.smtp.host}`,"success");
   switchTab("list");
 }
 async function validateAndSave(){ validateConfig(); await saveProfile(); }
@@ -824,9 +849,9 @@ function updateStartBtn(){
 function getActiveConfig(){
   if(state.activeProfileId){
     const p=state.profiles.find(p=>p.id===state.activeProfileId);
-    if(p)return{mode:p.mode,smtp:p.smtp,resendKey:p.resendKey,fromEmail:p.fromEmail,fromName:p.fromName,replyTo:p.replyTo||""};
+    if(p)return{mode:p.mode,provider:p.provider||"resend",smtp:p.smtp,resendKey:p.resendKey,fromEmail:p.fromEmail,fromName:p.fromName,replyTo:p.replyTo||""};
   }
-  return{mode:state.mode,smtp:state.smtp,resendKey:state.resendKey,fromEmail:state.fromEmail,fromName:state.fromName,replyTo:state.replyTo};
+  return{mode:state.mode,provider:state.provider,smtp:state.smtp,resendKey:state.resendKey,fromEmail:state.fromEmail,fromName:state.fromName,replyTo:state.replyTo};
 }
 async function startSend(){
   state.mail.subject=document.getElementById("mail-subject").value;
@@ -850,7 +875,7 @@ async function startSend(){
   }
   try{
     const r=await api("/api/queue/start",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
-      mode:cfg.mode,smtp:cfg.smtp,resendKey:cfg.resendKey,fromEmail:cfg.fromEmail,fromName:cfg.fromName,replyTo:cfg.replyTo,
+      mode:cfg.mode,provider:cfg.provider,smtp:cfg.smtp,resendKey:cfg.resendKey,fromEmail:cfg.fromEmail,fromName:cfg.fromName,replyTo:cfg.replyTo,
       cc:state.cc,attachments:state.attachments,mail:state.mail,recipients:targets,delayMs:state.delayMs,bccMode:state.bccMode,bccSize:state.bccSize,
     })});
     const d=await r.json();
@@ -939,7 +964,7 @@ function showDoneBar(sent,failed,total){
   document.getElementById("done-bar").style.display="block";
   const dm=state.delayMs, dLabel=dm>=60000?`${Math.round(dm/60000)}min`:`${Math.round(dm/1000)}s`;
   document.getElementById("done-stats").innerHTML=[
-    {l:"CANAL",v:state.mode==="resend"?"AWS":"SMTP",c:state.mode==="resend"?"var(--purple)":"var(--cyan)"},
+    {l:"CANAL",v:state.mode==="resend"?(PROVIDER_LABEL[state.provider]||"API"):"SMTP",c:state.mode==="resend"?"var(--purple)":"var(--cyan)"},
     {l:"ENVOI",v:state.bccMode?"BCC":"Indiv",c:"var(--dim)"},
     {l:"ENVOYÉS",v:sent,c:"var(--green)"},
     {l:"ÉCHECS",v:failed,c:failed>0?"var(--red)":"var(--muted)"},
