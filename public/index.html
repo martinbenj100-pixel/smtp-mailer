@@ -261,11 +261,12 @@
               <option value="brevo">Brevo</option>
               <option value="mailersend">MailerSend</option>
               <option value="maileroo">Maileroo</option>
+              <option value="nuntly">Nuntly</option>
             </select>
             <div class="hint" id="provider-hint">API HTTPS · une clé + domaine vérifié</div></div>
           <div class="field"><label class="lbl">Clé API</label>
-            <input id="resend-key" type="password" placeholder="clé du fournisseur" oninput="configChanged()" autocapitalize="none"/>
-            <div class="hint">Dans le tableau de bord du fournisseur → API Keys</div></div>
+            <input id="resend-key" type="password" placeholder="clé du fournisseur" oninput="onApiKeyInput(this.value)" autocapitalize="none"/>
+            <div class="hint">Collez votre clé : le fournisseur est détecté automatiquement</div></div>
           <div class="field"><label class="lbl">From Email</label>
             <input id="resend-from-email" placeholder="toi@tondomaine.com" oninput="configChanged()" type="email" autocapitalize="none"/>
             <div class="hint">Domaine vérifié chez le fournisseur</div></div>
@@ -609,8 +610,34 @@ const PROVIDER_HINTS={
   brevo:"Clé xkeysib-… · expéditeur vérifié sur brevo.com",
   mailersend:"Token API · domaine vérifié sur mailersend.com",
   maileroo:"Sending Key · domaine vérifié sur maileroo.com",
+  nuntly:"Clé apk_… · domaine vérifié sur nuntly.com",
 };
-const PROVIDER_LABEL={resend:"RESEND",postmark:"POSTMARK",brevo:"BREVO",mailersend:"MAILERSEND",maileroo:"MAILEROO"};
+const PROVIDER_LABEL={resend:"RESEND",postmark:"POSTMARK",brevo:"BREVO",mailersend:"MAILERSEND",maileroo:"MAILEROO",nuntly:"NUNTLY"};
+
+// Détection auto du fournisseur d'après le format de la clé collée
+function detectProvider(key){
+  const k=(key||"").trim();
+  if(!k) return null;
+  if(/^re_/.test(k))                     return "resend";
+  if(/^xkeysib-/i.test(k))               return "brevo";
+  if(/^mlsn\./i.test(k))                 return "mailersend";
+  if(/^apk_/i.test(k))                   return "nuntly";
+  // Postmark Server Token = UUID 8-4-4-4-12
+  if(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(k)) return "postmark";
+  return null; // format inconnu → on garde le choix manuel du menu
+}
+function onApiKeyInput(v){
+  const det=detectProvider(v);
+  if(det && det!==state.provider){
+    state.provider=det;
+    document.getElementById("provider-select").value=det;
+    document.getElementById("provider-hint").innerHTML=
+      `🔎 détecté : <b style="color:var(--green)">${PROVIDER_LABEL[det]}</b>`;
+    if(state.mode==="resend")updateModeBadge("resend");
+  }
+  configChanged();
+}
+
 function onProvider(v){
   state.provider=v; configChanged();
   document.getElementById("provider-hint").textContent=PROVIDER_HINTS[v]||"";
