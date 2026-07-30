@@ -94,29 +94,125 @@ app.post('/api/auth/logout', (req, res) => {
 // ─────────────────────────────────────────────────────
 // HELPERS D'ENVOI
 // ─────────────────────────────────────────────────────
-async function sendViaResend(opts) {
-  const { apiKey, fromEmail, fromName, to, cc, bcc, replyTo, subject, text, html, attachments } = opts;
-  if (!apiKey)   throw new Error('Clé API Resend manquante');
-  if (!fromEmail) throw new Error('From Email manquant (domaine vérifié Resend)');
+const asArray = x => Array.isArray(x) ? x : (x ? [x] : []);
 
-  const from = fromName ? `${fromName} <${fromEmail}>` : fromEmail;
-  const payload = { from, to: Array.isArray(to) ? to : [to], subject };
+// Registre des fournisseurs d'API HTTP. Chaque adaptateur = endpoint + en-têtes + corps + lecture d'erreur.
+// Formats vérifiés sur les docs officielles (2026). Ajouter un fournisseur = ajouter une entrée ici.
+const API_PROVIDERS = {
+  resend: {
+    label: 'Resend',
+    endpoint: 'https://api.resend.com/emails',
+    headers: k => ({ 'Authorization': `Bearer ${k}`, 'Content-Type': 'application/json' }),
+    body: m => {
+      const from = m.fromName ? `${m.fromName} <${m.fromEmail}>` : m.fromEmail;
+      const p = { from, to: asArray(m.to), subject: m.subject };
+      if (m.cc && m.cc.length)   p.cc = m.cc;
+      if (m.bcc && m.bcc.length) p.bcc = m.bcc;
+      if (m.replyTo)             p.reply_to = m.replyTo;
+      if (m.html) p.html = m.html; else p.text = m.text || '';
+      if (m.attachments && m.attachments.length)
+        p.attachments = m.attachments.map(a => ({ filename: a.filename, content: a.content }));
+      return p;
+    },
+    error: (res, d) => d?.message || d?.error || `HTTP ${res.status}`
+  },
 
-  if (cc && cc.length)   payload.cc = cc;
-  if (bcc && bcc.length) payload.bcc = bcc;
-  if (replyTo)           payload.reply_to = replyTo;
-  if (html) payload.html = html; else payload.text = text || '';
-  if (attachments && attachments.length) {
-    payload.attachments = attachments.map(a => ({ filename: a.filename, content: a.content }));
+  postmark: {
+    label: 'Postmark',
+    endpoint: 'https://api.postmarkapp.com/email',
+    headers: k => ({ 'X-Postmark-Server-Token': k, 'Content-Type': 'application/json', 'Accept': 'application/json' }),
+    body: m => {
+      const from = m.fromName ? `${m.fromName} <${m.fromEmail}>` : m.fromEmail;
+      const p = { From: from, To: asArray(m.to).join(','), Subject: m.subject, MessageStream: 'outbound' };
+      if (m.cc && m.cc.length)   p.Cc = m.cc.join(',');
+      if (m.bcc && m.bcc.length) p.Bcc = m.bcc.join(',');
+      if (m.replyTo)             p.ReplyTo = m.replyTo;
+      if (m.html) p.HtmlBody = m.html; else p.TextBody = m.text || '';
+      if (m.attachments && m.attachments.length)
+        p.Attachments = m.attachments.map(a => ({ Name: a.filename, Content: a.content, ContentType: a.type || 'application/octet-stream' }));
+      return p;
+    },
+    error: (res, d) => d?.Message || `HTTP ${res.status}`
+  },
+
+  brevo: {
+    label: 'Brevo',
+    endpoint: 'https://api.brevo.com/v3/smtp/email',
+    headers: k => ({ 'api-key': k, 'Content-Type': 'application/json', 'Accept': 'application/json' }),
+    body: m => {
+      const p = {
+        sender: m.fromName ? { name: m.fromName, email: m.fromEmail } : { email: m.fromEmail },
+        to: asArray(m.to).map(e => ({ email: e })),
+        subject: m.subject
+      };
+      if (m.cc && m.cc.length)   p.cc = m.cc.map(e => ({ email: e }));
+      if (m.bcc && m.bcc.length) p.bcc = m.bcc.map(e => ({ email: e }));
+      if (m.replyTo)             p.replyTo = { email: m.replyTo };
+      if (m.html) p.htmlContent = m.html; else p.textContent = m.text || '';
+      if (m.attachments && m.attachments.length)
+        p.attachment = m.attachments.map(a => ({ name: a.filename, content: a.content }));
+      return p;
+    },
+    error: (res, d) => d?.message || `HTTP ${res.status}`
+  },
+
+  mailersend: {
+    label: 'MailerSend',
+    endpoint: 'https://api.mailersend.com/v1/email',
+    headers: k => ({ 'Authorization': `Bearer ${k}`, 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }),
+    body: m => {
+      const p = {
+        from: m.fromName ? { email: m.fromEmail, name: m.fromName } : { email: m.fromEmail },
+        to: asArray(m.to).map(e => ({ email: e })),
+        subject: m.subject
+      };
+      if (m.cc && m.cc.length)   p.cc = m.cc.map(e => ({ email: e }));
+      if (m.bcc && m.bcc.length) p.bcc = m.bcc.map(e => ({ email: e }));
+      if (m.replyTo)             p.reply_to = { email: m.replyTo };
+      if (m.html) p.html = m.html; else p.text = m.text || '';
+      if (m.attachments && m.attachments.length)
+        p.attachments = m.attachments.map(a => ({ filename: a.filename, content: a.content, disposition: 'attachment' }));
+      return p;
+    },
+    error: (res, d) => d?.message || `HTTP ${res.status}`
+  },
+
+  maileroo: {
+    label: 'Maileroo',
+    endpoint: 'https://smtp.maileroo.com/api/v2/emails',
+    headers: k => ({ 'Authorization': `Bearer ${k}`, 'Content-Type': 'application/json' }),
+    body: m => {
+      const p = {
+        from: m.fromName ? { address: m.fromEmail, display_name: m.fromName } : { address: m.fromEmail },
+        to: asArray(m.to).map(e => ({ address: e })),
+        subject: m.subject
+      };
+      if (m.cc && m.cc.length)   p.cc = m.cc.map(e => ({ address: e }));
+      if (m.bcc && m.bcc.length) p.bcc = m.bcc.map(e => ({ address: e }));
+      if (m.replyTo)             p.reply_to = { address: m.replyTo };
+      if (m.html) p.html = m.html; else p.plain = m.text || '';
+      if (m.attachments && m.attachments.length)
+        p.attachments = m.attachments.map(a => ({ file_name: a.filename, content: a.content, content_type: a.type || 'application/octet-stream' }));
+      return p;
+    },
+    error: (res, d) => d?.message || `HTTP ${res.status}`
   }
+};
 
-  const res = await fetch('https://api.resend.com/emails', {
+// Dispatcher générique : envoie via le fournisseur choisi.
+async function sendViaApi(providerKey, m) {
+  const P = API_PROVIDERS[providerKey] || API_PROVIDERS.resend;
+  if (!m.apiKey)   throw new Error('Clé API manquante');
+  if (!m.fromEmail) throw new Error('From Email manquant (domaine vérifié)');
+
+  const res = await fetch(P.endpoint, {
     method: 'POST',
-    headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
+    headers: P.headers(m.apiKey),
+    body: JSON.stringify(P.body(m))
   });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data?.message || data?.error || `HTTP ${res.status}`);
+  let data = {};
+  try { data = await res.json(); } catch (e) {}
+  if (!res.ok) throw new Error(`[${P.label}] ${P.error(res, data)}`);
   return data;
 }
 
@@ -192,7 +288,7 @@ app.post('/api/profiles/:id/test', requireAuth, async (req, res) => {
     };
 
     if (profile.mode === 'resend') {
-      await sendViaResend({ apiKey: profile.resendKey, ...base });
+      await sendViaApi(profile.provider || 'resend', { apiKey: profile.resendKey, ...base });
     } else {
       const t = buildSmtpTransporter(profile.smtp);
       await sendViaSmtp(t, base); t.close();
@@ -208,7 +304,7 @@ app.post('/api/profiles/:id/test', requireAuth, async (req, res) => {
 // ─────────────────────────────────────────────────────
 app.post('/api/test', requireAuth, async (req, res) => {
   try {
-    const { mode, smtp, resendKey, fromEmail, fromName, replyTo, testEmail } = req.body;
+    const { mode, provider, smtp, resendKey, fromEmail, fromName, replyTo, testEmail } = req.body;
     if (!testEmail || !testEmail.includes('@')) {
       return res.json({ success: false, detail: 'Email de test invalide' });
     }
@@ -220,9 +316,9 @@ app.post('/api/test', requireAuth, async (req, res) => {
     };
 
     if (mode === 'resend') {
-      if (!resendKey) return res.json({ success: false, detail: 'Clé API Resend manquante' });
+      if (!resendKey) return res.json({ success: false, detail: 'Clé API manquante' });
       if (!fromEmail) return res.json({ success: false, detail: 'From Email manquant (domaine vérifié)' });
-      await sendViaResend({ apiKey: resendKey, ...base });
+      await sendViaApi(provider || 'resend', { apiKey: resendKey, ...base });
     } else {
       if (!smtp || !smtp.host || !smtp.port || !smtp.user || !smtp.pass) {
         return res.json({ success: false, detail: 'Config SMTP incomplète' });
@@ -262,6 +358,7 @@ app.post('/api/queue/start', requireAuth, async (req, res) => {
     mode: b.mode,
     smtp: b.smtp,
     resendKey: b.resendKey,
+    provider: b.provider || 'resend',
     fromEmail: b.fromEmail,
     fromName: b.fromName,
     replyTo: b.replyTo || '',
@@ -289,13 +386,13 @@ app.post('/api/queue/start', requireAuth, async (req, res) => {
 });
 
 async function processQueue() {
-  const isResend = queue.mode === 'resend';
+  const isApi = queue.mode === 'resend';
   lastSendAt = 0; // réinitialise le limiteur de débit
   let smtpTransporter = null;
-  if (!isResend) smtpTransporter = buildSmtpTransporter(queue.smtp, true);
+  if (!isApi) smtpTransporter = buildSmtpTransporter(queue.smtp, true);
 
-  if (queue.bccMode) await processBccMode(isResend, smtpTransporter);
-  else               await processIndividual(isResend, smtpTransporter);
+  if (queue.bccMode) await processBccMode(isApi, smtpTransporter);
+  else               await processIndividual(isApi, smtpTransporter);
 
   if (smtpTransporter) smtpTransporter.close();
   queue.status = 'done';
@@ -303,7 +400,7 @@ async function processQueue() {
 }
 
 // 1 mail par destinataire — personnalisation {{name}} active
-async function processIndividual(isResend, smtpTransporter) {
+async function processIndividual(isApi, smtpTransporter) {
   for (let i = 0; i < queue.recipients.length; i++) {
     if (queue.status === 'stopped') break;
     if (queue.status === 'paused') await waitForResume();
@@ -323,8 +420,8 @@ async function processIndividual(isResend, smtpTransporter) {
         attachments: queue.attachments
       };
       await rateGate(); // ne jamais dépasser 10 requêtes/seconde
-      if (isResend) await sendViaResend({ apiKey: queue.resendKey, ...opts });
-      else          await sendViaSmtp(smtpTransporter, opts);
+      if (isApi) await sendViaApi(queue.provider, { apiKey: queue.resendKey, ...opts });
+      else       await sendViaSmtp(smtpTransporter, opts);
 
       rec.status = 'sent'; queue.sent++;
       addQueueLog(`✓ ${rec.email}`, 'success');
@@ -337,7 +434,7 @@ async function processIndividual(isResend, smtpTransporter) {
 }
 
 // 1 mail par lot — toute la liste en copie cachée (perso {{name}} impossible)
-async function processBccMode(isResend, smtpTransporter) {
+async function processBccMode(isApi, smtpTransporter) {
   const size = queue.bccSize || BCC_CHUNK;
   const all = queue.recipients.filter(r => r.status !== 'sent');
   const subject = queue.mail.subject;
@@ -362,8 +459,8 @@ async function processBccMode(isResend, smtpTransporter) {
         attachments: queue.attachments
       };
       await rateGate(); // ne jamais dépasser 10 requêtes/seconde
-      if (isResend) await sendViaResend({ apiKey: queue.resendKey, ...opts });
-      else          await sendViaSmtp(smtpTransporter, opts);
+      if (isApi) await sendViaApi(queue.provider, { apiKey: queue.resendKey, ...opts });
+      else       await sendViaSmtp(smtpTransporter, opts);
 
       chunk.forEach(r => { r.status = 'sent'; });
       queue.sent += chunk.length;
