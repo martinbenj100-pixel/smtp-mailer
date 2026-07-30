@@ -180,7 +180,7 @@ const API_PROVIDERS = {
   maileroo: {
     label: 'Maileroo',
     endpoint: 'https://smtp.maileroo.com/api/v2/emails',
-    headers: k => ({ 'Authorization': `Bearer ${k}`, 'Content-Type': 'application/json' }),
+    headers: k => ({ 'X-API-Key': k, 'Content-Type': 'application/json' }),
     body: m => {
       const p = {
         from: m.fromName ? { address: m.fromEmail, display_name: m.fromName } : { address: m.fromEmail },
@@ -196,6 +196,24 @@ const API_PROVIDERS = {
       return p;
     },
     error: (res, d) => d?.message || `HTTP ${res.status}`
+  },
+
+  nuntly: {
+    label: 'Nuntly',
+    endpoint: 'https://api.nuntly.com/emails',
+    headers: k => ({ 'Authorization': `Bearer ${k}`, 'Content-Type': 'application/json' }),
+    body: m => {
+      const from = m.fromName ? `${m.fromName} <${m.fromEmail}>` : m.fromEmail;
+      const p = { from, to: asArray(m.to), subject: m.subject };
+      if (m.cc && m.cc.length)   p.cc = m.cc;
+      if (m.bcc && m.bcc.length) p.bcc = m.bcc;
+      if (m.replyTo)             p.replyTo = m.replyTo;
+      if (m.html) p.html = m.html; else p.text = m.text || '';
+      if (m.attachments && m.attachments.length)
+        p.attachments = m.attachments.map(a => ({ content: a.content, filename: a.filename, contentType: a.type || 'application/octet-stream' }));
+      return p;
+    },
+    error: (res, d) => (d && d.error && d.error.title) || d?.message || `HTTP ${res.status}`
   }
 };
 
