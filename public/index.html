@@ -188,6 +188,7 @@
       <button class="tab-btn" data-tab="config" onclick="switchTab('config')" style="flex:1;padding:11px 4px;background:none;border:none;border-bottom:2px solid transparent;color:var(--muted);font-family:'Courier New',monospace;font-size:10px;text-transform:uppercase;letter-spacing:.06em;cursor:pointer">⚙ Config <span id="config-ok-mark" style="display:none;color:var(--green);font-size:9px">✓</span></button>
       <button class="tab-btn" data-tab="list" onclick="switchTab('list')" style="flex:1;padding:11px 4px;background:none;border:none;border-bottom:2px solid transparent;color:var(--muted);font-family:'Courier New',monospace;font-size:10px;text-transform:uppercase;letter-spacing:.06em;cursor:pointer">📋 Liste</button>
       <button class="tab-btn" data-tab="compose" onclick="switchTab('compose')" style="flex:1;padding:11px 4px;background:none;border:none;border-bottom:2px solid transparent;color:var(--muted);font-family:'Courier New',monospace;font-size:10px;text-transform:uppercase;letter-spacing:.06em;cursor:pointer">✉ Message</button>
+      <button class="tab-btn" data-tab="pool" onclick="switchTab('pool')" style="flex:1;padding:11px 4px;background:none;border:none;border-bottom:2px solid transparent;color:var(--muted);font-family:'Courier New',monospace;font-size:10px;text-transform:uppercase;letter-spacing:.06em;cursor:pointer">🌐 Pool</button>
     </div>
 
     <div id="scroll-area">
@@ -375,6 +376,61 @@
         <div class="info-box">💡 Utilise <span style="color:var(--cyan)">{{name}}</span> — remplacé par le nom de chaque destinataire (mode individuel uniquement).</div>
       </div>
 
+      <!-- POOL SMTP -->
+      <div id="tab-pool" style="display:none">
+        <div class="info-box" style="margin-bottom:14px;line-height:1.7">
+          🌐 Charge plusieurs comptes SMTP depuis un fichier <b>.txt</b> — un par ligne au format :<br/>
+          <span style="color:var(--cyan);font-family:'Courier New',monospace">user:pass:serveur</span><br/>
+          Port <b>587</b> STARTTLS par défaut. Chaque ligne est testée à l'upload, les invalides sont retirées.
+        </div>
+
+        <div class="field">
+          <label class="lbl">Fichier de comptes SMTP (.txt)</label>
+          <input type="file" id="pool-file" accept=".txt,text/plain" onchange="onPoolFile(this)"/>
+          <div class="hint">Sera testé compte par compte avant chargement</div>
+        </div>
+
+        <div id="pool-progress" style="display:none;padding:12px;border-radius:5px;border:1px solid var(--bord);background:rgba(0,240,255,.05);font-family:'Courier New',monospace;font-size:12px;color:var(--cyan);margin-bottom:14px">
+          ⟳ Test des comptes en cours…
+        </div>
+
+        <div id="pool-report" style="display:none;margin-bottom:14px"></div>
+
+        <div id="pool-status" style="display:none;margin-bottom:14px">
+          <div class="box">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+              <span style="font-family:'Courier New',monospace;font-size:11px;color:var(--green);text-transform:uppercase;letter-spacing:.1em">✓ Pool chargé</span>
+              <button class="btn btn-red" style="padding:4px 10px;font-size:10px" onclick="clearPool()">Vider</button>
+            </div>
+            <div id="pool-list"></div>
+          </div>
+        </div>
+
+        <div class="box">
+          <div style="font-size:10px;font-family:'Courier New',monospace;color:var(--cyan);text-transform:uppercase;letter-spacing:.1em;margin-bottom:10px">Mode d'utilisation</div>
+          <div class="mode-toggle" style="margin-bottom:10px">
+            <button class="mode-btn active-smtp" id="pool-off-btn" onclick="setPoolUse(false)">SMTP unique</button>
+            <button class="mode-btn" id="pool-on-btn" onclick="setPoolUse(true)">Utiliser le pool</button>
+          </div>
+          <div id="pool-strategy" style="display:none">
+            <label style="display:flex;align-items:center;gap:8px;font-family:'Courier New',monospace;font-size:12px;color:var(--text);padding:8px;border-radius:4px;background:rgba(0,240,255,.05);margin-bottom:6px;cursor:pointer">
+              <input type="radio" name="pool-mode" value="sequential" checked onchange="setPoolMode('sequential')" style="accent-color:var(--cyan)"/>
+              <div>
+                <div style="font-weight:700;color:var(--cyan)">Séquentiel (rotation)</div>
+                <div style="font-size:11px;color:var(--dim);margin-top:2px">Un SMTP après l'autre. Répartit la charge, rythme du délai global.</div>
+              </div>
+            </label>
+            <label style="display:flex;align-items:center;gap:8px;font-family:'Courier New',monospace;font-size:12px;color:var(--text);padding:8px;border-radius:4px;background:rgba(193,75,255,.05);cursor:pointer">
+              <input type="radio" name="pool-mode" value="parallel" onchange="setPoolMode('parallel')" style="accent-color:var(--purple)"/>
+              <div>
+                <div style="font-weight:700;color:var(--purple)">Simultané (parallèle)</div>
+                <div style="font-size:11px;color:var(--dim);margin-top:2px">Chaque SMTP envoie sa tranche en même temps. Plus rapide, mais plus visible.</div>
+              </div>
+            </label>
+          </div>
+        </div>
+      </div>
+
     </div>
 
     <div id="send-area" style="padding:14px 16px;border-top:1px solid var(--bord);background:rgba(11,16,32,.85)">
@@ -468,6 +524,7 @@ const state = {
   mail:{subject:"",body:"",html:false},
   cc:[], attachments:[],
   recipients:[], delayMs:5000, bccMode:false, bccSize:40,
+  usePool:false, poolMode:"sequential", pool:[],
   nextId:1, logIndex:0, pollInterval:null, profiles:[],
 };
 
@@ -651,7 +708,7 @@ function updateModeBadge(m){
   b.style.color=m==="smtp"?"var(--cyan)":"var(--purple)";
 }
 function switchTab(name){
-  ["profiles","config","list","compose"].forEach(t=>{document.getElementById(`tab-${t}`).style.display=t===name?"block":"none";});
+  ["profiles","config","list","compose","pool"].forEach(t=>{document.getElementById(`tab-${t}`).style.display=t===name?"block":"none";});
   document.querySelectorAll(".tab-btn").forEach(b=>{const a=b.dataset.tab===name;b.style.borderBottom=a?"2px solid var(--cyan)":"2px solid transparent";b.style.color=a?"var(--cyan)":"var(--muted)";});
   if(name==="list")renderListWarn();
   if(name==="compose")renderFromPreview();
@@ -867,6 +924,100 @@ function renderAttachments(){
 function fmtSize(b){ if(b<1024)return b+" o"; if(b<1024*1024)return (b/1024).toFixed(0)+" Ko"; return (b/1024/1024).toFixed(1)+" Mo"; }
 
 // ══════════════ SEND ══════════════
+// ══════════════ POOL SMTP ══════════════
+function onPoolFile(input){
+  const f = input.files[0]; if(!f) return;
+  const reader = new FileReader();
+  reader.onload = async () => {
+    const text = String(reader.result || "");
+    input.value = "";
+    document.getElementById("pool-progress").style.display = "block";
+    document.getElementById("pool-report").style.display = "none";
+    document.getElementById("pool-status").style.display = "none";
+    try {
+      const r = await api("/api/smtp-pool/upload", {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ text })
+      });
+      const d = await r.json();
+      if(!d.success){ addLog("Upload pool échoué","error"); return; }
+      state.pool = d.pool || [];
+      renderPoolReport(d);
+      renderPoolStatus();
+      addLog(`Pool : ${d.valid}/${d.total} SMTP validés`, d.valid>0?"success":"warn");
+    } catch(e) {
+      addLog(`Erreur upload : ${e.message}`,"error");
+    }
+    document.getElementById("pool-progress").style.display = "none";
+  };
+  reader.readAsText(f);
+}
+function renderPoolReport(d){
+  const el = document.getElementById("pool-report");
+  el.style.display = "block";
+  const rows = d.report.map(r => {
+    const col = r.ok ? "var(--green)" : "var(--red)";
+    const icon = r.ok ? "✓" : "✗";
+    const err = r.error ? ` — ${r.error.substring(0,60)}` : "";
+    return `<div style="font-family:'Courier New',monospace;font-size:11px;padding:4px 8px;border-radius:3px;background:rgba(0,0,0,.2);margin-bottom:3px;color:${col}">${icon} ${r.line.substring(0,50)}${err}</div>`;
+  }).join("");
+  el.innerHTML = `
+    <div class="box" style="max-height:220px;overflow-y:auto">
+      <div style="font-family:'Courier New',monospace;font-size:11px;color:var(--cyan);margin-bottom:8px;text-transform:uppercase;letter-spacing:.1em">
+        Rapport : ${d.valid} valides / ${d.total} testés
+      </div>
+      ${rows}
+    </div>`;
+}
+function renderPoolStatus(){
+  const status = document.getElementById("pool-status");
+  if(!state.pool.length){ status.style.display="none"; return; }
+  status.style.display = "block";
+  document.getElementById("pool-list").innerHTML = state.pool.map(p =>
+    `<div style="display:flex;justify-content:space-between;padding:6px 8px;border-radius:3px;background:rgba(57,255,158,.05);margin-bottom:4px;font-family:'Courier New',monospace;font-size:11px">
+      <span style="color:var(--text)">${p.user}</span>
+      <span style="color:var(--dim)">${p.host}:${p.port}</span>
+    </div>`).join("");
+}
+async function clearPool(){
+  if(!confirm("Vider le pool ?")) return;
+  await api("/api/smtp-pool", { method:"DELETE" });
+  state.pool = [];
+  state.usePool = false;
+  setPoolUse(false);
+  document.getElementById("pool-status").style.display = "none";
+  document.getElementById("pool-report").style.display = "none";
+  addLog("Pool vidé","info");
+}
+function setPoolUse(on){
+  if(on && !state.pool.length){ addLog("Charge d'abord un fichier de comptes SMTP","warn"); return; }
+  state.usePool = on;
+  document.getElementById("pool-off-btn").className = "mode-btn" + (!on?" active-smtp":"");
+  document.getElementById("pool-on-btn").className = "mode-btn" + (on?" active-resend":"");
+  document.getElementById("pool-strategy").style.display = on ? "block" : "none";
+  updatePoolBadge();
+}
+function setPoolMode(m){ state.poolMode = m; updatePoolBadge(); }
+function updatePoolBadge(){
+  // Le badge principal reflète l'usage du pool
+  if(state.usePool){
+    const b = document.getElementById("mode-badge");
+    b.textContent = `POOL ${state.pool.length} ${state.poolMode==='parallel'?'∥':'→'}`;
+    b.style.borderColor = "rgba(57,255,158,.4)";
+    b.style.background = "rgba(57,255,158,.08)";
+    b.style.color = "var(--green)";
+  } else {
+    updateModeBadge(state.mode);
+  }
+}
+async function loadPool(){
+  try {
+    const r = await api("/api/smtp-pool");
+    const d = await r.json();
+    if(d.success){ state.pool = d.pool || []; renderPoolStatus(); }
+  } catch(e) {}
+}
+
 function updateStartBtn(){
   const pending=state.recipients.filter(r=>r.active&&r.status!=="sent").length;
   const btn=document.getElementById("btn-start");
@@ -890,7 +1041,7 @@ async function startSend(){
     if(n<1)n=1; if(n>50)n=50;
     state.bccSize=n;
   }
-  if(!state.validated){addLog("⚠ Sélectionne un profil ou configure une connexion","error");switchTab("profiles");return;}
+  if(!state.validated && !state.usePool){addLog("⚠ Sélectionne un profil, configure une connexion ou active le pool SMTP","error");switchTab("profiles");return;}
   if(!state.mail.subject){addLog("Le sujet est obligatoire","error");switchTab("compose");return;}
   const targets=state.recipients.filter(r=>r.active&&r.status!=="sent");
   if(!targets.length){addLog("Aucun destinataire actif","warn");return;}
@@ -903,7 +1054,7 @@ async function startSend(){
   try{
     const r=await api("/api/queue/start",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
       mode:cfg.mode,provider:cfg.provider,smtp:cfg.smtp,resendKey:cfg.resendKey,fromEmail:cfg.fromEmail,fromName:cfg.fromName,replyTo:cfg.replyTo,
-      cc:state.cc,attachments:state.attachments,mail:state.mail,recipients:targets,delayMs:state.delayMs,bccMode:state.bccMode,bccSize:state.bccSize,
+      cc:state.cc,attachments:state.attachments,mail:state.mail,recipients:targets,delayMs:state.delayMs,bccMode:state.bccMode,bccSize:state.bccSize,usePool:state.usePool,poolMode:state.poolMode,
     })});
     const d=await r.json();
     if(!d.success){addLog(`Erreur: ${d.error}`,"error");return;}
@@ -1018,7 +1169,7 @@ function clearLogs(){
 
 // ══════════════ INIT ══════════════
 function appInit(){
-  switchTab("profiles"); updateStartBtn(); updateDelayLabel(); loadProfiles();
+  switchTab("profiles"); updateStartBtn(); updateDelayLabel(); loadProfiles(); loadPool();
   (async()=>{
     try{
       const r=await api("/api/queue/status?since=0"); const data=await r.json();
