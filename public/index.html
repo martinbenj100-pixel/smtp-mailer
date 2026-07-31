@@ -381,7 +381,7 @@
         <div class="info-box" style="margin-bottom:14px;line-height:1.7">
           🌐 Charge plusieurs comptes SMTP depuis un fichier <b>.txt</b> — un par ligne au format :<br/>
           <span style="color:var(--cyan);font-family:'Courier New',monospace">user:pass:serveur</span><br/>
-          Port <b>587</b> STARTTLS par défaut. Chaque ligne est testée à l'upload, les invalides sont retirées.
+          Le <b>port et le chiffrement</b> sont <b>détectés automatiquement</b> (587 STARTTLS → 465 SSL → 25). Chaque ligne est testée, les invalides sont retirées.
         </div>
 
         <div class="field">
@@ -958,8 +958,8 @@ function renderPoolReport(d){
   const rows = d.report.map(r => {
     const col = r.ok ? "var(--green)" : "var(--red)";
     const icon = r.ok ? "✓" : "✗";
-    const err = r.error ? ` — ${r.error.substring(0,60)}` : "";
-    return `<div style="font-family:'Courier New',monospace;font-size:11px;padding:4px 8px;border-radius:3px;background:rgba(0,0,0,.2);margin-bottom:3px;color:${col}">${icon} ${r.line.substring(0,50)}${err}</div>`;
+    const info = r.ok ? (r.detected ? ` [${r.detected}]` : "") : (r.error ? ` — ${r.error.substring(0,60)}` : "");
+    return `<div style="font-family:'Courier New',monospace;font-size:11px;padding:4px 8px;border-radius:3px;background:rgba(0,0,0,.2);margin-bottom:3px;color:${col}">${icon} ${r.line.substring(0,50)}${info}</div>`;
   }).join("");
   el.innerHTML = `
     <div class="box" style="max-height:220px;overflow-y:auto">
@@ -976,7 +976,7 @@ function renderPoolStatus(){
   document.getElementById("pool-list").innerHTML = state.pool.map(p =>
     `<div style="display:flex;justify-content:space-between;padding:6px 8px;border-radius:3px;background:rgba(57,255,158,.05);margin-bottom:4px;font-family:'Courier New',monospace;font-size:11px">
       <span style="color:var(--text)">${p.user}</span>
-      <span style="color:var(--dim)">${p.host}:${p.port}</span>
+      <span style="color:var(--dim)">${p.host}:${p.port}${p.detected?` <span style="color:var(--green)">[${p.detected}]</span>`:''}</span>
     </div>`).join("");
 }
 async function clearPool(){
