@@ -273,6 +273,91 @@ async function sendViaSmtp(transporter, opts) {
 }
 
 // ─────────────────────────────────────────────────────
+// POOL SMTP — plusieurs comptes SMTP uploadés en masse
+// Format ligne : user:pass:serveur  (port=587, STARTTLS par défaut)
+// ─────────────────────────────────────────────────────
+let smtpPool = [];  // [{ user, pass, host, port:587, secure:false, ok:true }]
+
+function parseSmtpLine(line) {
+  const parts = line.split(':').map(s => s.trim()).filter(Boolean);
+  if (parts.length < 3) return null;
+  const [user, pass, host] = parts;
+  if (!user.includes('@') || !host) return null;
+  return { user, pass, host, port: 587, secure: false };
+}
+
+async function verifySmtp(entry) {
+  const t = nodemailer.createTransport({
+    host: entry.host,
+    port: entry.port,
+    secure: entry.secure,
+    auth: { user: entry.user, pass: entry.pass },
+    connectionTimeout: 8000,
+    greetingTimeout: 8000,
+    socketTimeout: 8000
+  });
+  try {
+    await t.verify();
+    t.close();
+    return { ok: true };
+  } catch (err) {
+    t.close();
+    return { ok: false, error: err.message };
+  }
+}
+
+// POST /api/smtp-pool/upload — reçoit { text } (contenu du .txt),
+// teste chaque ligne, retire les invalides, remplace le pool.
+app.post('/api/smtp-pool/upload', requireAuth, async (req, res) => {
+  const text = (req.body && req.body.text) || '';
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+
+  const report = [];  // { line, ok, error? }
+  const valid  = [];
+
+  // Test en parallèle (limité à 10 en même temps pour ne pas saturer)
+  const CONCURRENCY = 10;
+  for (let i = 0; i < lines.length; i += CONCURRENCY) {
+    const batch = lines.slice(i, i + CONCURRENCY);
+    const results = await Promise.all(batch.map(async line => {
+      const parsed = parseSmtpLine(line);
+      if (!parsed) return { line, ok: false, error: 'Format invalide (attendu user:pass:serveur)' };
+      const v = await verifySmtp(parsed);
+      return { line, ok: v.ok, error: v.error, entry: parsed };
+    }));
+    for (const r of results) {
+      report.push({ line: r.line, ok: r.ok, error: r.error });
+      if (r.ok) valid.push(r.entry);
+    }
+  }
+
+  smtpPool = valid;
+  res.json({
+    success: true,
+    total: lines.length,
+    valid: valid.length,
+    invalid: lines.length - valid.length,
+    report,
+    pool: valid.map(e => ({ user: e.user, host: e.host, port: e.port }))
+  });
+});
+
+// GET /api/smtp-pool — renvoie l'état actuel du pool
+app.get('/api/smtp-pool', requireAuth, (req, res) => {
+  res.json({
+    success: true,
+    count: smtpPool.length,
+    pool: smtpPool.map(e => ({ user: e.user, host: e.host, port: e.port }))
+  });
+});
+
+// DELETE /api/smtp-pool — vide le pool
+app.delete('/api/smtp-pool', requireAuth, (req, res) => {
+  smtpPool = [];
+  res.json({ success: true });
+});
+
+// ─────────────────────────────────────────────────────
 // PROFILS
 // ─────────────────────────────────────────────────────
 app.get('/api/profiles', requireAuth, (req, res) => {
@@ -387,6 +472,9 @@ app.post('/api/queue/start', requireAuth, async (req, res) => {
     delayMs: b.delayMs,
     bccMode: b.bccMode === true,
     bccSize: Math.min(50, Math.max(1, parseInt(b.bccSize) || BCC_CHUNK)),
+    usePool: b.usePool === true && smtpPool.length > 0,
+    poolMode: b.poolMode === 'parallel' ? 'parallel' : 'sequential',
+    poolSnapshot: b.usePool === true ? [...smtpPool] : [],
     sent: 0, failed: 0,
     total: (b.recipients || []).length,
     logs: []
@@ -394,7 +482,8 @@ app.post('/api/queue/start', requireAuth, async (req, res) => {
 
   const attInfo = queue.attachments.length ? ` + ${queue.attachments.length} PJ` : '';
   const bccInfo = queue.bccMode ? ` / BCC lots de ${queue.bccSize}` : '';
-  addQueueLog(`⚡ Envoi démarré — ${queue.total} destinataire(s) [${queue.mode}${bccInfo}]${attInfo}`, 'success');
+  const poolInfo = queue.usePool ? ` / pool ${queue.poolSnapshot.length} SMTP ${queue.poolMode==='parallel'?'parallèle':'séquentiel'}` : '';
+  addQueueLog(`⚡ Envoi démarré — ${queue.total} destinataire(s) [${queue.mode}${bccInfo}${poolInfo}]${attInfo}`, 'success');
   res.json({ success: true });
 
   processQueue().catch(err => {
@@ -406,6 +495,16 @@ app.post('/api/queue/start', requireAuth, async (req, res) => {
 async function processQueue() {
   const isApi = queue.mode === 'resend';
   lastSendAt = 0; // réinitialise le limiteur de débit
+
+  // Cas pool SMTP : ignore le SMTP unique, utilise les comptes uploadés
+  if (queue.usePool && !isApi) {
+    if (queue.poolMode === 'parallel') await processPoolParallel();
+    else                                 await processPoolSequential();
+    queue.status = 'done';
+    addQueueLog(`✅ Envoi terminé — ${queue.sent} réussi(s), ${queue.failed} échoué(s)`, 'success');
+    return;
+  }
+
   let smtpTransporter = null;
   if (!isApi) smtpTransporter = buildSmtpTransporter(queue.smtp, true);
 
@@ -415,6 +514,92 @@ async function processQueue() {
   if (smtpTransporter) smtpTransporter.close();
   queue.status = 'done';
   addQueueLog(`✅ Envoi terminé — ${queue.sent} réussi(s), ${queue.failed} échoué(s)`, 'success');
+}
+
+// Un mail envoyé via un compte SMTP donné (pool)
+async function sendOneWithPoolAccount(acc, rec) {
+  const t = nodemailer.createTransport({
+    host: acc.host, port: acc.port, secure: acc.secure,
+    auth: { user: acc.user, pass: acc.pass },
+    connectionTimeout: 10000, greetingTimeout: 10000, socketTimeout: 15000
+  });
+  try {
+    const name = rec.name || rec.email.split('@')[0];
+    const body = (queue.mail.body || '').replace(/{{name}}/g, name);
+    // Le From par défaut vient du compte SMTP lui-même (rassure les serveurs)
+    // mais on garde fromName si l'utilisateur en a défini un.
+    const fromEmail = queue.fromEmail || acc.user;
+    const fromName  = queue.fromName || '';
+    await t.sendMail({
+      from: fromName ? `"${fromName}" <${fromEmail}>` : fromEmail,
+      to: rec.email,
+      cc: queue.cc && queue.cc.length ? queue.cc : undefined,
+      replyTo: queue.replyTo || undefined,
+      subject: queue.mail.subject,
+      text: queue.mail.html ? undefined : body,
+      html: queue.mail.html ? body : undefined,
+      attachments: smtpAttachments(queue.attachments)
+    });
+  } finally {
+    t.close();
+  }
+}
+
+// POOL SÉQUENTIEL : les SMTP tournent en rond, un mail après l'autre
+async function processPoolSequential() {
+  const pool = queue.poolSnapshot;
+  let idx = 0;
+  for (let i = 0; i < queue.recipients.length; i++) {
+    if (queue.status === 'stopped') break;
+    if (queue.status === 'paused') await waitForResume();
+    const rec = queue.recipients[i];
+    if (rec.status === 'sent') continue;
+    const acc = pool[idx % pool.length]; idx++;
+    try {
+      rec.status = 'sending';
+      await rateGate();
+      await sendOneWithPoolAccount(acc, rec);
+      rec.status = 'sent'; queue.sent++;
+      addQueueLog(`✓ ${rec.email}  ← ${acc.user}`, 'success');
+    } catch (err) {
+      rec.status = 'error'; queue.failed++;
+      addQueueLog(`✗ ${rec.email}  ← ${acc.user} — ${err.message.substring(0,80)}`, 'error');
+    }
+    await new Promise(r => setTimeout(r, queue.delayMs));
+  }
+}
+
+// POOL PARALLÈLE : la liste est découpée en tranches, une par SMTP, envoyées en parallèle
+async function processPoolParallel() {
+  const pool = queue.poolSnapshot;
+  const pending = queue.recipients.filter(r => r.status !== 'sent');
+  if (!pending.length) return;
+
+  // Répartition round-robin des destinataires entre les comptes du pool
+  const buckets = pool.map(() => []);
+  pending.forEach((rec, i) => buckets[i % pool.length].push(rec));
+
+  addQueueLog(`Répartition : ${buckets.map((b,i)=>`${pool[i].user}=${b.length}`).join(' · ')}`, 'info');
+
+  // Chaque compte traite sa tranche séquentiellement (mais tous en parallèle entre eux)
+  await Promise.all(pool.map(async (acc, i) => {
+    const bucket = buckets[i];
+    for (const rec of bucket) {
+      if (queue.status === 'stopped') break;
+      if (queue.status === 'paused') await waitForResume();
+      try {
+        rec.status = 'sending';
+        await sendOneWithPoolAccount(acc, rec);
+        rec.status = 'sent'; queue.sent++;
+        addQueueLog(`✓ ${rec.email}  ← ${acc.user}`, 'success');
+      } catch (err) {
+        rec.status = 'error'; queue.failed++;
+        addQueueLog(`✗ ${rec.email}  ← ${acc.user} — ${err.message.substring(0,80)}`, 'error');
+      }
+      // Délai par compte (chaque compte respecte son propre rythme)
+      if (queue.delayMs > 0) await new Promise(r => setTimeout(r, queue.delayMs));
+    }
+  }));
 }
 
 // 1 mail par destinataire — personnalisation {{name}} active
