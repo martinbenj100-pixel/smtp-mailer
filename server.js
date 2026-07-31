@@ -283,18 +283,28 @@ function parseSmtpLine(line) {
   if (parts.length < 3) return null;
   const [user, pass, host] = parts;
   if (!user.includes('@') || !host) return null;
-  return { user, pass, host, port: 587, secure: false };
+  // Le port/chiffrement seront auto-détectés par verifySmtp
+  return { user, pass, host };
 }
 
-async function verifySmtp(entry) {
+// Essaie plusieurs combinaisons port/chiffrement, retient la première qui marche
+const AUTO_SMTP_ATTEMPTS = [
+  { port: 587, secure: false, label: 'STARTTLS 587' },
+  { port: 465, secure: true,  label: 'SSL 465' },
+  { port: 25,  secure: false, label: 'STARTTLS 25' }
+];
+
+async function tryOne(entry, attempt) {
   const t = nodemailer.createTransport({
     host: entry.host,
-    port: entry.port,
-    secure: entry.secure,
+    port: attempt.port,
+    secure: attempt.secure,
     auth: { user: entry.user, pass: entry.pass },
     connectionTimeout: 8000,
     greetingTimeout: 8000,
-    socketTimeout: 8000
+    socketTimeout: 8000,
+    // Rend plus tolérant : certains serveurs OVH/perso ont des certifs auto-signés
+    tls: { rejectUnauthorized: false }
   });
   try {
     await t.verify();
@@ -302,8 +312,28 @@ async function verifySmtp(entry) {
     return { ok: true };
   } catch (err) {
     t.close();
-    return { ok: false, error: err.message };
+    return { ok: false, error: err.message, code: err.code };
   }
+}
+
+async function verifySmtp(entry) {
+  const errors = [];
+  for (const att of AUTO_SMTP_ATTEMPTS) {
+    const r = await tryOne(entry, att);
+    if (r.ok) {
+      // Injecte le port/secure gagnants dans l'entrée
+      entry.port = att.port;
+      entry.secure = att.secure;
+      entry.detected = att.label;
+      return { ok: true, detected: att.label };
+    }
+    errors.push(`${att.label}: ${r.error}`);
+    // Si l'auth a été refusée à un port, inutile d'insister sur les autres
+    if (/auth|login|credentials|535|invalid/i.test(r.error || '')) {
+      return { ok: false, error: `Auth refusée (${att.label}) — ${r.error}` };
+    }
+  }
+  return { ok: false, error: errors.join(' | ') };
 }
 
 // POST /api/smtp-pool/upload — reçoit { text } (contenu du .txt),
@@ -323,10 +353,10 @@ app.post('/api/smtp-pool/upload', requireAuth, async (req, res) => {
       const parsed = parseSmtpLine(line);
       if (!parsed) return { line, ok: false, error: 'Format invalide (attendu user:pass:serveur)' };
       const v = await verifySmtp(parsed);
-      return { line, ok: v.ok, error: v.error, entry: parsed };
+      return { line, ok: v.ok, error: v.error, detected: v.detected, entry: parsed };
     }));
     for (const r of results) {
-      report.push({ line: r.line, ok: r.ok, error: r.error });
+      report.push({ line: r.line, ok: r.ok, error: r.error, detected: r.detected });
       if (r.ok) valid.push(r.entry);
     }
   }
@@ -338,7 +368,7 @@ app.post('/api/smtp-pool/upload', requireAuth, async (req, res) => {
     valid: valid.length,
     invalid: lines.length - valid.length,
     report,
-    pool: valid.map(e => ({ user: e.user, host: e.host, port: e.port }))
+    pool: valid.map(e => ({ user: e.user, host: e.host, port: e.port, detected: e.detected }))
   });
 });
 
@@ -347,7 +377,7 @@ app.get('/api/smtp-pool', requireAuth, (req, res) => {
   res.json({
     success: true,
     count: smtpPool.length,
-    pool: smtpPool.map(e => ({ user: e.user, host: e.host, port: e.port }))
+    pool: smtpPool.map(e => ({ user: e.user, host: e.host, port: e.port, detected: e.detected }))
   });
 });
 
