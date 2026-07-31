@@ -381,7 +381,7 @@
         <div class="info-box" style="margin-bottom:14px;line-height:1.7">
           🌐 Charge plusieurs comptes SMTP depuis un fichier <b>.txt</b> — un par ligne au format :<br/>
           <span style="color:var(--cyan);font-family:'Courier New',monospace">user:pass:serveur</span><br/>
-          Le <b>port et le chiffrement</b> sont <b>détectés automatiquement</b> (587 STARTTLS → 465 SSL → 25). Chaque ligne est testée, les invalides sont retirées.
+          Le <b>port et le chiffrement</b> sont <b>détectés automatiquement à l'envoi</b>. Les échecs éventuels sont remontés ligne par ligne dans la console.
         </div>
 
         <div class="field">
@@ -391,7 +391,7 @@
         </div>
 
         <div id="pool-progress" style="display:none;padding:12px;border-radius:5px;border:1px solid var(--bord);background:rgba(0,240,255,.05);font-family:'Courier New',monospace;font-size:12px;color:var(--cyan);margin-bottom:14px">
-          ⟳ Test des comptes en cours…
+          ⟳ Chargement des comptes…
         </div>
 
         <div id="pool-report" style="display:none;margin-bottom:14px"></div>
@@ -944,7 +944,7 @@ function onPoolFile(input){
       state.pool = d.pool || [];
       renderPoolReport(d);
       renderPoolStatus();
-      addLog(`Pool : ${d.valid}/${d.total} SMTP validés`, d.valid>0?"success":"warn");
+      addLog(`Pool : ${d.valid} compte(s) chargé(s)${d.invalid?` — ${d.invalid} ligne(s) au format incorrect ignorée(s)`:""}`, d.valid>0?"success":"warn");
     } catch(e) {
       addLog(`Erreur upload : ${e.message}`,"error");
     }
@@ -964,7 +964,7 @@ function renderPoolReport(d){
   el.innerHTML = `
     <div class="box" style="max-height:220px;overflow-y:auto">
       <div style="font-family:'Courier New',monospace;font-size:11px;color:var(--cyan);margin-bottom:8px;text-transform:uppercase;letter-spacing:.1em">
-        Rapport : ${d.valid} valides / ${d.total} testés
+        Rapport : ${d.valid} chargé(s) / ${d.total} ligne(s)
       </div>
       ${rows}
     </div>`;
