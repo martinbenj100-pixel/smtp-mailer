@@ -337,27 +337,26 @@ async function verifySmtp(entry) {
 }
 
 // POST /api/smtp-pool/upload — reçoit { text } (contenu du .txt),
-// teste chaque ligne, retire les invalides, remplace le pool.
+// parse chaque ligne, remplace le pool. AUCUN test réseau : les échecs
+// éventuels sont remontés pendant l'envoi (le blocage SMTP de Render
+// rendrait tout verify() faussement rouge).
 app.post('/api/smtp-pool/upload', requireAuth, async (req, res) => {
   const text = (req.body && req.body.text) || '';
   const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
 
-  const report = [];  // { line, ok, error? }
+  const report = [];
   const valid  = [];
 
-  // Test en parallèle (limité à 10 en même temps pour ne pas saturer)
-  const CONCURRENCY = 10;
-  for (let i = 0; i < lines.length; i += CONCURRENCY) {
-    const batch = lines.slice(i, i + CONCURRENCY);
-    const results = await Promise.all(batch.map(async line => {
-      const parsed = parseSmtpLine(line);
-      if (!parsed) return { line, ok: false, error: 'Format invalide (attendu user:pass:serveur)' };
-      const v = await verifySmtp(parsed);
-      return { line, ok: v.ok, error: v.error, detected: v.detected, entry: parsed };
-    }));
-    for (const r of results) {
-      report.push({ line: r.line, ok: r.ok, error: r.error, detected: r.detected });
-      if (r.ok) valid.push(r.entry);
+  for (const line of lines) {
+    const parsed = parseSmtpLine(line);
+    if (!parsed) {
+      report.push({ line, ok: false, error: 'Format invalide (attendu user:pass:serveur)' });
+    } else {
+      // Port/chiffrement seront auto-détectés au moment d'envoyer
+      parsed.port = 587;
+      parsed.secure = false;
+      valid.push(parsed);
+      report.push({ line, ok: true });
     }
   }
 
@@ -547,32 +546,55 @@ async function processQueue() {
 }
 
 // Un mail envoyé via un compte SMTP donné (pool)
+// Auto-détecte le port/chiffrement à la 1ère utilisation, puis mémorise.
 async function sendOneWithPoolAccount(acc, rec) {
-  const t = nodemailer.createTransport({
-    host: acc.host, port: acc.port, secure: acc.secure,
-    auth: { user: acc.user, pass: acc.pass },
-    connectionTimeout: 10000, greetingTimeout: 10000, socketTimeout: 15000
-  });
-  try {
-    const name = rec.name || rec.email.split('@')[0];
-    const body = (queue.mail.body || '').replace(/{{name}}/g, name);
-    // Le From par défaut vient du compte SMTP lui-même (rassure les serveurs)
-    // mais on garde fromName si l'utilisateur en a défini un.
-    const fromEmail = queue.fromEmail || acc.user;
-    const fromName  = queue.fromName || '';
-    await t.sendMail({
-      from: fromName ? `"${fromName}" <${fromEmail}>` : fromEmail,
-      to: rec.email,
-      cc: queue.cc && queue.cc.length ? queue.cc : undefined,
-      replyTo: queue.replyTo || undefined,
-      subject: queue.mail.subject,
-      text: queue.mail.html ? undefined : body,
-      html: queue.mail.html ? body : undefined,
-      attachments: smtpAttachments(queue.attachments)
+  const attempts = acc.detected
+    ? [{ port: acc.port, secure: acc.secure, label: acc.detected }]  // déjà détecté : on garde
+    : AUTO_SMTP_ATTEMPTS;                                             // 1ère fois : on teste
+
+  const name = rec.name || rec.email.split('@')[0];
+  const body = (queue.mail.body || '').replace(/{{name}}/g, name);
+  const fromEmail = queue.fromEmail || acc.user;
+  const fromName  = queue.fromName || '';
+  const mailOpts = {
+    from: fromName ? `"${fromName}" <${fromEmail}>` : fromEmail,
+    to: rec.email,
+    cc: queue.cc && queue.cc.length ? queue.cc : undefined,
+    replyTo: queue.replyTo || undefined,
+    subject: queue.mail.subject,
+    text: queue.mail.html ? undefined : body,
+    html: queue.mail.html ? body : undefined,
+    attachments: smtpAttachments(queue.attachments)
+  };
+
+  const errors = [];
+  for (const att of attempts) {
+    const t = nodemailer.createTransport({
+      host: acc.host, port: att.port, secure: att.secure,
+      auth: { user: acc.user, pass: acc.pass },
+      connectionTimeout: 10000, greetingTimeout: 10000, socketTimeout: 15000,
+      tls: { rejectUnauthorized: false }
     });
-  } finally {
-    t.close();
+    try {
+      await t.sendMail(mailOpts);
+      t.close();
+      // Mémorise la combinaison gagnante pour les envois suivants
+      if (!acc.detected) {
+        acc.port = att.port;
+        acc.secure = att.secure;
+        acc.detected = att.label;
+      }
+      return;
+    } catch (err) {
+      t.close();
+      errors.push(`${att.label}: ${err.message}`);
+      // Auth refusée → inutile d'essayer les autres ports
+      if (/auth|login|credentials|535|invalid/i.test(err.message || '')) {
+        throw new Error(`Auth refusée (${att.label}) — ${err.message}`);
+      }
+    }
   }
+  throw new Error(errors.join(' | '));
 }
 
 // POOL SÉQUENTIEL : les SMTP tournent en rond, un mail après l'autre
