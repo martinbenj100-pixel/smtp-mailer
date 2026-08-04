@@ -2363,7 +2363,7 @@ app.post('/api/profiles/:id/test', requireAuth, async (req, res) => {
     const base = {
       fromEmail: profile.fromEmail, fromName: profile.fromName, replyTo: profile.replyTo,
       to: testEmail, subject: '🧪 Test YODA MAILER',
-      text: 'Test de connexion réussi — YODA MAILER V5. https://oputui.s3.us-east-1.amazonaws.com/index.html'
+      text: 'Test de connexion réussi — YODA MAILER V5.'
     };
 
     if (profile.mode === 'resend') {
