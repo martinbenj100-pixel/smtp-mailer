@@ -1,10 +1,14 @@
 /**
- * YODA MAILER V5 — Backend avec obfuscation et templates dynamiques
+ * YODA MAILER V5 — Backend avec obfuscation, templates dynamiques et yodaSMTP
+ * 
  * Plateforme d'emailing : Resend (API HTTPS) + SMTP, avec gate d'accès par code.
  * Fonctions : envoi individuel (perso {{name}} + obfuscation), envoi groupé BCC, pièces jointes,
  * reply-to, cc, test de connexion, profils, envoi en arrière-plan (pause/reprise/stop).
  * Templates HTML dynamiques avec logo, couleurs personnalisées et reformulation.
  * Sauvegarde et chargement de configuration (export/import JSON).
+ * 
+ * yodaSMTP : Gestion intelligente des comptes SMTP depuis le fichier .env
+ * Format: user:pass:server (un compte par ligne)
  */
 
 const express = require('express');
@@ -15,7 +19,6 @@ const fs = require('fs');
 require('dotenv').config();
 
 const app = express();
-// Limite élevée pour accepter les pièces jointes encodées en base64 dans le JSON
 app.use(express.json({ limit: '30mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -23,13 +26,12 @@ app.use(express.static(path.join(__dirname, 'public')));
 // CONFIG
 // ─────────────────────────────────────────────────────
 const ACCESS_CODE = process.env.ACCESS_CODE || 'YODA-2025-CHANGE-MOI';
-const SESSION_TTL = 12 * 60 * 60 * 1000; // 12 h
-const BCC_CHUNK = 45;                     // < limite Resend (50 dest./envoi)
-const RATE_MAX_PER_SEC = 10;              // plafond dur : 10 requêtes/seconde max
-const RATE_MIN_INTERVAL = Math.ceil(1000 / RATE_MAX_PER_SEC); // 100 ms entre 2 départs
+const SESSION_TTL = 12 * 60 * 60 * 1000;
+const BCC_CHUNK = 45;
+const RATE_MAX_PER_SEC = 10;
+const RATE_MIN_INTERVAL = Math.ceil(1000 / RATE_MAX_PER_SEC);
 const CONFIG_FILE = path.join(__dirname, 'config.json');
 
-// Limiteur de débit : garantit au moins RATE_MIN_INTERVAL ms entre deux requêtes
 let lastSendAt = 0;
 async function rateGate() {
   const wait = RATE_MIN_INTERVAL - (Date.now() - lastSendAt);
@@ -42,35 +44,34 @@ if (ACCESS_CODE === 'YODA-2025-CHANGE-MOI') {
 }
 
 // ─────────────────────────────────────────────────────
-// STOCKAGE EN MÉMOIRE (repart à zéro au redémarrage)
+// STOCKAGE EN MÉMOIRE
 // ─────────────────────────────────────────────────────
 let profiles = [];
 let queue = emptyQueue();
-let history = [];       // historique d'envoi { email, name, status, timestamp, account?, error?, provider? }
-const HISTORY_MAX = 5000;  // limite raisonnable pour éviter d'exploser la RAM
+let history = [];
+const HISTORY_MAX = 5000;
 
 function pushHistory(entry) {
   history.push({ ...entry, timestamp: new Date().toISOString() });
   if (history.length > HISTORY_MAX) history = history.slice(-HISTORY_MAX);
 }
-const sessions = new Map(); // token -> expiresAt
+const sessions = new Map();
 
 function emptyQueue() {
   return { status: 'idle', recipients: [], logs: [], sent: 0, failed: 0, total: 0 };
 }
 
 // ─────────────────────────────────────────────────────
-// CHARGEMENT / SAUVEGARDE DE CONFIGURATION (fichier JSON)
+// CHARGEMENT / SAUVEGARDE DE CONFIGURATION
 // ─────────────────────────────────────────────────────
 function loadConfigFromFile() {
   try {
     if (fs.existsSync(CONFIG_FILE)) {
       const data = fs.readFileSync(CONFIG_FILE, 'utf8');
-      const config = JSON.parse(data);
-      return config;
+      return JSON.parse(data);
     }
   } catch (err) {
-    console.warn('⚠  Impossible de charger le fichier de configuration:', err.message);
+    console.warn('⚠ Impossible de charger le fichier de configuration:', err.message);
   }
   return null;
 }
@@ -86,7 +87,7 @@ function saveConfigToFile(config) {
 }
 
 // ─────────────────────────────────────────────────────
-// CONFIGURATION UTILISATEUR (logo, couleur, nom entreprise, URL CTA)
+// CONFIGURATION UTILISATEUR
 // ─────────────────────────────────────────────────────
 let userConfig = {
   companyName: 'DEVICO',
@@ -94,10 +95,10 @@ let userConfig = {
   primaryColor: '#003da5',
   buttonColor: '#003da5',
   ctaUrl: 'https://example.com',
-  mentionsLegales: 'Société Anonyme à Directoire et Conseil de Surveillance – Capital social : 6 585 350 218 €\n115 rue de Sèvres, 75275 Paris CEDEX 06 – RCS Paris 421 100 645 – ORIAS n° 07 023 424'
+  mentionsLegales: 'Société Anonyme à Directoire et Conseil de Surveillance – Capital social : 6 585 350 218 €\n115 rue de Sèvres, 75275 Paris CEDEX 06 – RCS Paris 421 100 645 – ORIAS n° 07 023 424',
+  useYodaSmtp: false
 };
 
-// Charger la configuration depuis le fichier si existant
 const savedConfig = loadConfigFromFile();
 if (savedConfig) {
   userConfig.companyName = savedConfig.companyName || userConfig.companyName;
@@ -106,835 +107,629 @@ if (savedConfig) {
   userConfig.buttonColor = savedConfig.primaryColor || userConfig.buttonColor;
   userConfig.ctaUrl = savedConfig.ctaUrl || userConfig.ctaUrl;
   userConfig.mentionsLegales = savedConfig.mentionsLegales || userConfig.mentionsLegales;
+  userConfig.useYodaSmtp = savedConfig.useYodaSmtp || false;
 }
 
 // ─────────────────────────────────────────────────────
-// SYSTÈME DE SYNONYMES (version enrichie avec plus de 500+ synonymes)
+// YODA SMTP - Configuration depuis .env
 // ─────────────────────────────────────────────────────
-// Base de synonymes robuste — chaque entrée est substituable dans un contexte
-// administratif/technique (email de service, notification, procédure).
-// Genre grammatical et nombre préservés. Pas de faux-amis contextuels.
-// Objectif : ~8 synonymes par entrée quand la langue le permet honnêtement.
+const YODA_SMTP_RAW = process.env.YODA_SMTP_LIST || '';
+let yodaAccounts = [];
+let yodaTestResults = [];
+let selectedYodaAccount = null;
 
-// Base de synonymes robuste — chaque entrée est substituable dans un contexte
-// administratif/technique (email de service, notification, procédure).
-// Genre grammatical et nombre préservés. Pas de faux-amis contextuels.
-// Objectif : ~8 synonymes par entrée quand la langue le permet honnêtement.
+function parseYodaAccounts() {
+  if (!YODA_SMTP_RAW) {
+    console.warn('⚠ Aucun compte yodaSMTP défini dans .env (YODA_SMTP_LIST)');
+    return [];
+  }
+  
+  const accounts = [];
+  const lines = YODA_SMTP_RAW.split('\n')
+    .map(line => line.trim())
+    .filter(line => line && !line.startsWith('#'));
+  
+  for (const line of lines) {
+    const parts = line.split(':').map(s => s.trim());
+    if (parts.length >= 3) {
+      const [user, pass, host] = parts;
+      if (user.includes('@') && host) {
+        let id = String(Math.floor(100000 + Math.random() * 900000));
+        while (accounts.some(a => a.id === id)) {
+          id = String(Math.floor(100000 + Math.random() * 900000));
+        }
+        accounts.push({
+          id: id,
+          user: user,
+          pass: pass,
+          host: host,
+          port: 587,
+          secure: false,
+          domain: user.split('@')[1].toLowerCase(),
+          tested: false,
+          working: false,
+          error: null,
+          detected: null,
+          disabled: false,
+          disabledReason: null
+        });
+      }
+    }
+  }
+  return accounts;
+}
 
+function groupAccountsByDomain(accounts) {
+  const groups = {};
+  for (const acc of accounts) {
+    if (!groups[acc.domain]) groups[acc.domain] = [];
+    groups[acc.domain].push(acc);
+  }
+  return groups;
+}
+
+// ─────────────────────────────────────────────────────
+// FONCTION DE TEST SMTP COMPLÈTE AVEC VÉRIFICATION
+// ─────────────────────────────────────────────────────
+async function testSingleSmtp(account) {
+  const attempts = [
+    { port: 587, secure: false, label: 'STARTTLS 587' },
+    { port: 465, secure: true, label: 'SSL 465' },
+    { port: 25, secure: false, label: 'STARTTLS 25' }
+  ];
+  
+  for (const att of attempts) {
+    const transporter = nodemailer.createTransport({
+      host: account.host,
+      port: att.port,
+      secure: att.secure,
+      auth: { user: account.user, pass: account.pass },
+      connectionTimeout: 8000,
+      greetingTimeout: 8000,
+      socketTimeout: 8000,
+      tls: { rejectUnauthorized: false }
+    });
+    
+    try {
+      await transporter.verify();
+      transporter.close();
+      account.port = att.port;
+      account.secure = att.secure;
+      account.working = true;
+      account.tested = true;
+      account.detected = att.label;
+      return { success: true, account };
+    } catch (err) {
+      transporter.close();
+      if (/auth|login|credentials|535|invalid/i.test(err.message || '')) {
+        account.tested = true;
+        account.working = false;
+        account.error = `Auth refusée: ${err.message}`;
+        return { success: false, account, error: account.error };
+      }
+    }
+  }
+  
+  account.tested = true;
+  account.working = false;
+  account.error = 'Échec de connexion sur tous les ports';
+  return { success: false, account, error: account.error };
+}
+
+// Fonction de vérification SMTP (pour le pool)
+async function verifySmtp(entry) {
+  const attempts = [
+    { port: 587, secure: false, label: 'STARTTLS 587' },
+    { port: 465, secure: true, label: 'SSL 465' },
+    { port: 25, secure: false, label: 'STARTTLS 25' }
+  ];
+  
+  const errors = [];
+  for (const att of attempts) {
+    try {
+      const t = nodemailer.createTransport({
+        host: entry.host,
+        port: att.port,
+        secure: att.secure,
+        auth: { user: entry.user, pass: entry.pass },
+        connectionTimeout: 8000,
+        greetingTimeout: 8000,
+        socketTimeout: 8000,
+        tls: { rejectUnauthorized: false }
+      });
+      await t.verify();
+      t.close();
+      entry.port = att.port;
+      entry.secure = att.secure;
+      entry.detected = att.label;
+      return { ok: true, detected: att.label };
+    } catch (err) {
+      errors.push(`${att.label}: ${err.message}`);
+      if (/auth|login|credentials|535|invalid/i.test(err.message || '')) {
+        return { ok: false, error: `Auth refusée (${att.label}) — ${err.message}` };
+      }
+    }
+  }
+  return { ok: false, error: errors.join(' | ') };
+}
+
+// ─────────────────────────────────────────────────────
+// TEST INTELLIGENT DES COMPTES YODA SMTP
+// ─────────────────────────────────────────────────────
+async function testYodaAccounts(testEmail) {
+  if (!testEmail || !testEmail.includes('@')) {
+    throw new Error('Email de test invalide');
+  }
+  
+  yodaAccounts = parseYodaAccounts();
+  if (yodaAccounts.length === 0) {
+    throw new Error('Aucun compte SMTP trouvé dans .env');
+  }
+  
+  console.log(`🔄 Test de ${yodaAccounts.length} comptes yodaSMTP...`);
+  
+  const groups = groupAccountsByDomain(yodaAccounts);
+  const results = [];
+  
+  for (const [domain, accounts] of Object.entries(groups)) {
+    console.log(`📧 Domaine ${domain}: ${accounts.length} comptes trouvés`);
+    
+    let toTest = accounts;
+    if (accounts.length > 2) {
+      const shuffled = [...accounts].sort(() => Math.random() - 0.5);
+      toTest = shuffled.slice(0, 2);
+      console.log(`   → Sélection aléatoire de 2 comptes sur ${accounts.length}`);
+    }
+    
+    for (const account of toTest) {
+      console.log(`   Test du compte ${account.id} (${account.user})...`);
+      
+      try {
+        const result = await testSingleSmtp(account);
+        
+        if (result.success && testEmail) {
+          try {
+            const transporter = nodemailer.createTransport({
+              host: account.host,
+              port: account.port,
+              secure: account.secure,
+              auth: { user: account.user, pass: account.pass },
+              connectionTimeout: 10000,
+              greetingTimeout: 10000,
+              socketTimeout: 15000,
+              tls: { rejectUnauthorized: false }
+            });
+            
+            await transporter.sendMail({
+              from: `"YODA Test" <${account.user}>`,
+              to: testEmail,
+              subject: '🧪 Test yodaSMTP',
+              text: 'Test de connexion réussi depuis yodaSMTP.\n\n' +
+                    `ID: ${account.id}\n` +
+                    `Domaine: ${account.domain}\n` +
+                    `Serveur: ${account.host}:${account.port}\n` +
+                    `Connexion: ${account.detected || 'OK'}`
+            });
+            
+            transporter.close();
+            account.working = true;
+            account.tested = true;
+            results.push({
+              id: account.id,
+              domain: account.domain,
+              user: account.user,
+              host: account.host,
+              port: account.port,
+              detected: account.detected || 'OK',
+              working: true,
+              error: null
+            });
+            console.log(`      ✅ ${account.id} - OK`);
+          } catch (sendErr) {
+            account.working = false;
+            account.error = `Envoi échoué: ${sendErr.message}`;
+            results.push({
+              id: account.id,
+              domain: account.domain,
+              user: account.user,
+              host: account.host,
+              port: account.port,
+              detected: account.detected || 'OK',
+              working: false,
+              error: account.error
+            });
+            console.log(`      ❌ ${account.id} - Échec envoi: ${sendErr.message}`);
+          }
+        } else {
+          results.push({
+            id: account.id,
+            domain: account.domain,
+            user: account.user,
+            host: account.host,
+            port: account.port || 587,
+            detected: account.detected || 'Échec',
+            working: false,
+            error: result.error || 'Échec de connexion'
+          });
+          console.log(`      ❌ ${account.id} - Échec connexion`);
+        }
+      } catch (err) {
+        results.push({
+          id: account.id,
+          domain: account.domain,
+          user: account.user,
+          host: account.host,
+          port: account.port || 587,
+          detected: 'Échec',
+          working: false,
+          error: err.message
+        });
+        console.log(`      ❌ ${account.id} - Erreur: ${err.message}`);
+      }
+    }
+  }
+  
+  yodaTestResults = results;
+  return {
+    total: yodaAccounts.length,
+    tested: results.length,
+    working: results.filter(r => r.working).length,
+    results: results
+  };
+}
+
+function selectYodaAccount(id) {
+  const account = yodaAccounts.find(a => a.id === id);
+  if (!account) throw new Error(`Compte avec l'ID ${id} non trouvé`);
+  if (!account.working) throw new Error(`Le compte ${id} n'est pas fonctionnel`);
+  selectedYodaAccount = account;
+  return account;
+}
+
+// ─────────────────────────────────────────────────────
+// ROUTES YODA SMTP
+// ─────────────────────────────────────────────────────
+app.get('/api/yoda/accounts', requireAuth, (req, res) => {
+  const masked = yodaAccounts.map(acc => ({
+    id: acc.id,
+    domain: acc.domain,
+    host: acc.host,
+    port: acc.port,
+    secure: acc.secure,
+    working: acc.working,
+    tested: acc.tested,
+    error: acc.error || null,
+    detected: acc.detected || null
+  }));
+  res.json({
+    success: true,
+    total: yodaAccounts.length,
+    accounts: masked,
+    selected: selectedYodaAccount ? {
+      id: selectedYodaAccount.id,
+      domain: selectedYodaAccount.domain,
+      host: selectedYodaAccount.host
+    } : null
+  });
+});
+
+app.post('/api/yoda/test', requireAuth, async (req, res) => {
+  try {
+    const { testEmail } = req.body;
+    if (!testEmail || !testEmail.includes('@')) {
+      return res.json({ success: false, error: 'Email de test invalide' });
+    }
+    const results = await testYodaAccounts(testEmail);
+    res.json({
+      success: true,
+      results: results,
+      message: `${results.working} comptes fonctionnels sur ${results.tested} testés`
+    });
+  } catch (err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/yoda/select', requireAuth, (req, res) => {
+  try {
+    const { id } = req.body;
+    if (!id) return res.json({ success: false, error: 'ID requis' });
+    const account = selectYodaAccount(String(id));
+    res.json({
+      success: true,
+      selected: {
+        id: account.id,
+        domain: account.domain,
+        host: account.host,
+        port: account.port
+      },
+      message: `Compte ${id} sélectionné avec succès`
+    });
+  } catch (err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/yoda/reset', requireAuth, (req, res) => {
+  selectedYodaAccount = null;
+  yodaTestResults = [];
+  res.json({ success: true, message: 'Sélection réinitialisée' });
+});
+
+// ─────────────────────────────────────────────────────
+// SYSTÈME DE SYNONYMES (version complète)
+// ─────────────────────────────────────────────────────
 const SYNONYMS = {
-
-  // ═══════════════════════════════════════════════════════════════
   // VERBES
-  // ═══════════════════════════════════════════════════════════════
-
-  // --- Perception / constat ---
   'détecté': ['repéré', 'constaté', 'identifié', 'relevé', 'observé', 'décelé', 'remarqué', 'noté'],
-  'détectons': ['constatons', 'identifions', 'relevons', 'observons', 'décelons', 'remarquons', 'notons'],
   'détecter': ['constater', 'identifier', 'relever', 'observer', 'déceler', 'remarquer', 'noter'],
   'observer': ['constater', 'remarquer', 'relever', 'examiner', 'analyser', 'noter', 'déceler'],
-  'observons': ['constatons', 'remarquons', 'relevons', 'examinons', 'analysons', 'notons', 'décelons'],
-  'observé': ['constaté', 'remarqué', 'relevé', 'examiné', 'analysé', 'noté', 'décelé'],
   'constater': ['observer', 'remarquer', 'relever', 'reconnaître', 'établir', 'noter', 'identifier'],
-  'constatons': ['observons', 'remarquons', 'relevons', 'reconnaissons', 'établissons', 'notons', 'identifions'],
-  'constaté': ['observé', 'remarqué', 'relevé', 'reconnu', 'établi', 'noté', 'identifié'],
   'remarquer': ['constater', 'observer', 'relever', 'noter', 'déceler', 'identifier', 'repérer'],
-  'remarqué': ['constaté', 'observé', 'relevé', 'noté', 'décelé', 'identifié', 'repéré'],
   'identifier': ['reconnaître', 'repérer', 'détecter', 'établir', 'déceler', 'localiser', 'déterminer'],
-  'identifié': ['reconnu', 'repéré', 'détecté', 'établi', 'décelé', 'localisé', 'déterminé'],
-  'trouver': ['découvrir', 'repérer', 'localiser', 'identifier', 'déceler', 'détecter'],
-  'trouvé': ['découvert', 'repéré', 'localisé', 'identifié', 'décelé', 'détecté'],
-  'découvrir': ['trouver', 'repérer', 'identifier', 'déceler', 'détecter', 'localiser'],
-  'découvert': ['trouvé', 'repéré', 'identifié', 'décelé', 'détecté', 'localisé'],
-  'noter': ['constater', 'remarquer', 'relever', 'observer', 'consigner', 'signaler'],
-  'notez': ['constatez', 'remarquez', 'relevez', 'observez', 'consignez', 'signalez'],
-
-  // --- Action / exécution ---
   'procéder': ['effectuer', 'réaliser', 'accomplir', 'opérer', 'exécuter', 'entreprendre', 'engager'],
-  'procédez': ['effectuez', 'réalisez', 'accomplissez', 'opérez', 'exécutez', 'entreprenez', 'engagez'],
   'effectuer': ['réaliser', 'accomplir', 'procéder à', 'opérer', 'exécuter', 'entreprendre', 'mener'],
-  'effectuez': ['réalisez', 'accomplissez', 'procédez à', 'opérez', 'exécutez', 'entreprenez', 'menez'],
-  'effectué': ['réalisé', 'accompli', 'opéré', 'exécuté', 'entrepris', 'mené'],
   'réaliser': ['effectuer', 'accomplir', 'exécuter', 'mener à bien', 'opérer', 'entreprendre', 'concrétiser'],
-  'réalisez': ['effectuez', 'accomplissez', 'exécutez', 'menez à bien', 'opérez', 'entreprenez', 'concrétisez'],
-  'réalisé': ['effectué', 'accompli', 'exécuté', 'opéré', 'entrepris', 'concrétisé', 'mené à bien'],
   'exécuter': ['réaliser', 'accomplir', 'effectuer', 'opérer', 'procéder à', 'mener', 'entreprendre'],
-  'exécutez': ['réalisez', 'accomplissez', 'effectuez', 'opérez', 'procédez à', 'menez', 'entreprenez'],
-  'compléter': ['finaliser', 'achever', 'terminer', 'parachever', 'clôturer', 'boucler', 'conclure'],
-  'complétez': ['finalisez', 'achevez', 'terminez', 'parachevez', 'clôturez', 'bouclez', 'concluez'],
-  'complété': ['finalisé', 'achevé', 'terminé', 'parachevé', 'clôturé', 'bouclé', 'conclu'],
-  'finaliser': ['compléter', 'achever', 'terminer', 'clôturer', 'boucler', 'parachever', 'conclure'],
-  'finalisez': ['complétez', 'achevez', 'terminez', 'clôturez', 'bouclez', 'parachevez', 'concluez'],
-  'finalisé': ['complété', 'achevé', 'terminé', 'clôturé', 'bouclé', 'parachevé', 'conclu'],
-  'terminer': ['achever', 'finaliser', 'clôturer', 'compléter', 'boucler', 'parachever', 'conclure'],
-  'terminez': ['achevez', 'finalisez', 'clôturez', 'complétez', 'bouclez', 'parachevez', 'concluez'],
-  'terminé': ['achevé', 'finalisé', 'clôturé', 'complété', 'bouclé', 'parachevé', 'conclu'],
-  'commencer': ['débuter', 'entamer', 'amorcer', 'initier', 'engager', 'lancer', 'démarrer'],
-  'commencez': ['débutez', 'entamez', 'amorcez', 'initiez', 'engagez', 'lancez', 'démarrez'],
-  'lancer': ['démarrer', 'initier', 'entamer', 'engager', 'amorcer', 'débuter', 'déclencher'],
-  'lancez': ['démarrez', 'initiez', 'entamez', 'engagez', 'amorcez', 'débutez', 'déclenchez'],
-  'démarrer': ['lancer', 'commencer', 'entamer', 'initier', 'amorcer', 'débuter', 'engager'],
-
-  // --- Sécurité / protection ---
-  'protéger': ['préserver', 'sécuriser', 'sauvegarder', 'défendre', 'garantir'],
-  'protégez': ['préservez', 'sécurisez', 'sauvegardez', 'défendez', 'garantissez'],
-  'protégé': ['préservé', 'sécurisé', 'sauvegardé', 'défendu', 'garanti'],
-  'sauvegarder': ['préserver', 'protéger', 'conserver', 'enregistrer', 'sécuriser', 'archiver'],
-  'sauvegardez': ['préservez', 'protégez', 'conservez', 'enregistrez', 'sécurisez', 'archivez'],
-  'sauvegardé': ['préservé', 'protégé', 'conservé', 'enregistré', 'sécurisé', 'archivé'],
-  'préserver': ['protéger', 'sauvegarder', 'maintenir', 'conserver', 'sécuriser', 'défendre'],
-  'préservez': ['protégez', 'sauvegardez', 'maintenez', 'conservez', 'sécurisez', 'défendez'],
-  'préservé': ['protégé', 'sauvegardé', 'maintenu', 'conservé', 'sécurisé', 'défendu'],
-  'sécuriser': ['protéger', 'préserver', 'sauvegarder', 'défendre', 'garantir'],
-  'sécurisez': ['protégez', 'préservez', 'sauvegardez', 'défendez', 'garantissez'],
-
-  // --- Garantir / assurer ---
-  'garantir': ['assurer', 'offrir', 'procurer', 'maintenir', 'préserver', 'sécuriser', 'permettre'],
-  'garantissons': ['assurons', 'offrons', 'procurons', 'maintenons', 'préservons', 'sécurisons', 'permettons'],
-  'garantit': ['assure', 'offre', 'procure', 'maintient', 'préserve', 'sécurise', 'permet'],
-  'garanti': ['assuré', 'offert', 'procuré', 'maintenu', 'préservé', 'sécurisé', 'permis'],
-  'assurer': ['garantir', 'offrir', 'procurer', 'maintenir', 'préserver', 'permettre'],
-  'assurez': ['garantissez', 'offrez', 'procurez', 'maintenez', 'préservez', 'permettez'],
-  'assurons': ['garantissons', 'offrons', 'procurons', 'maintenons', 'préservons', 'permettons'],
-  'assure': ['garantit', 'offre', 'procure', 'maintient', 'préserve', 'permet'],
-  'assuré': ['garanti', 'offert', 'procuré', 'maintenu', 'préservé', 'permis'],
-  'offrir': ['procurer', 'garantir', 'assurer', 'permettre', 'proposer', 'fournir'],
-  'offre': ['procure', 'garantit', 'assure', 'permet', 'propose', 'fournit'],
-  'permettre': ['autoriser', 'garantir', 'assurer', 'offrir', 'procurer', 'rendre possible'],
-  'permet': ['autorise', 'garantit', 'assure', 'offre', 'procure', 'rend possible'],
-
-  // --- Optimiser / améliorer ---
-  'optimiser': ['améliorer', 'perfectionner', 'affiner', 'bonifier', 'rehausser'],
-  'optimisé': ['amélioré', 'perfectionné', 'affiné', 'bonifié', 'rehaussé'],
-  'améliorer': ['perfectionner', 'optimiser', 'affiner', 'bonifier', 'rehausser', 'enrichir'],
-  'améliorez': ['perfectionnez', 'optimisez', 'affinez', 'bonifiez', 'rehaussez', 'enrichissez'],
-  'amélioré': ['perfectionné', 'optimisé', 'affiné', 'bonifié', 'rehaussé', 'enrichi'],
-
-  // --- Nécessité (verbes) ---
-  'nécessiter': ['requérir', 'exiger', 'impliquer', 'demander', 'réclamer'],
-  'nécessite': ['requiert', 'exige', 'implique', 'demande', 'réclame'],
-  'exiger': ['requérir', 'nécessiter', 'imposer', 'réclamer', 'demander'],
-  'exige': ['requiert', 'nécessite', 'impose', 'réclame', 'demande'],
-  'requérir': ['nécessiter', 'exiger', 'demander', 'réclamer', 'impliquer'],
-  'requiert': ['nécessite', 'exige', 'demande', 'réclame', 'implique'],
-
-  // --- Mise à jour / modification ---
-  'actualiser': ['renouveler', 'rafraîchir', 'réviser', 'mettre à jour', 'moderniser', 'réactualiser'],
-  'mettre à jour': ['actualiser', 'renouveler', 'rafraîchir', 'réviser', 'moderniser', 'réactualiser'],
-  'actualisez': ['renouvelez', 'rafraîchissez', 'révisez', 'mettez à jour', 'modernisez', 'réactualisez'],
-  'actualisé': ['renouvelé', 'rafraîchi', 'révisé', 'mis à jour', 'modernisé', 'réactualisé'],
-  'modifier': ['changer', 'ajuster', 'réviser', 'adapter', 'transformer', 'actualiser', 'corriger'],
-  'modifiez': ['changez', 'ajustez', 'révisez', 'adaptez', 'transformez', 'actualisez', 'corrigez'],
-  'modifié': ['changé', 'ajusté', 'révisé', 'adapté', 'transformé', 'actualisé', 'corrigé'],
-  'changer': ['modifier', 'ajuster', 'renouveler', 'transformer', 'remplacer', 'actualiser'],
-  'changez': ['modifiez', 'ajustez', 'renouvelez', 'transformez', 'remplacez', 'actualisez'],
-  'ajuster': ['adapter', 'régler', 'modifier', 'affiner', 'aligner', 'accorder'],
-  'ajustez': ['adaptez', 'réglez', 'modifiez', 'affinez', 'alignez', 'accordez'],
-  'adapter': ['ajuster', 'accommoder', 'aligner', 'conformer', 'accorder', 'régler'],
-  'adaptez': ['ajustez', 'accommodez', 'alignez', 'conformez', 'accordez', 'réglez'],
-  'renouveler': ['actualiser', 'reconduire', 'proroger', 'rétablir', 'régénérer', 'moderniser'],
-  'renouvelez': ['actualisez', 'reconduisez', 'prorogez', 'rétablissez', 'régénérez', 'modernisez'],
-  'renouvelé': ['actualisé', 'reconduit', 'prorogé', 'rétabli', 'régénéré', 'modernisé'],
-  'corriger': ['rectifier', 'modifier', 'réviser', 'amender', 'redresser', 'ajuster'],
-  'corrigez': ['rectifiez', 'modifiez', 'révisez', 'amendez', 'redressez', 'ajustez'],
-  'corrigé': ['rectifié', 'modifié', 'révisé', 'amendé', 'redressé', 'ajusté'],
-  'rectifier': ['corriger', 'modifier', 'ajuster', 'amender', 'redresser', 'réviser'],
-
-  // --- Interaction utilisateur ---
-  'cliquer': ['appuyer', 'presser', 'sélectionner', 'actionner', 'toucher'],
-  'cliquez': ['appuyez', 'pressez', 'sélectionnez', 'actionnez', 'touchez'],
-  'sélectionner': ['choisir', 'retenir', 'désigner', 'cocher', 'opter pour', 'préférer'],
-  'sélectionnez': ['choisissez', 'retenez', 'désignez', 'cochez', 'optez pour', 'préférez'],
-  'choisir': ['sélectionner', 'retenir', 'désigner', 'opter pour', 'préférer', 'cocher'],
-  'choisissez': ['sélectionnez', 'retenez', 'désignez', 'optez pour', 'préférez', 'cochez'],
-  'valider': ['confirmer', 'approuver', 'entériner', 'homologuer', 'certifier', 'ratifier', 'attester'],
-  'validez': ['confirmez', 'approuvez', 'entérinez', 'homologuez', 'certifiez', 'ratifiez', 'attestez'],
-  'validé': ['confirmé', 'approuvé', 'entériné', 'homologué', 'certifié', 'ratifié', 'attesté'],
-  'confirmer': ['valider', 'attester', 'certifier', 'entériner', 'approuver', 'ratifier'],
-  'confirmez': ['validez', 'attestez', 'certifiez', 'entérinez', 'approuvez', 'ratifiez'],
-  'confirmé': ['validé', 'attesté', 'certifié', 'entériné', 'approuvé', 'ratifié'],
-  'saisir': ['entrer', 'renseigner', 'inscrire', 'introduire', 'noter', 'consigner'],
-  'saisissez': ['entrez', 'renseignez', 'inscrivez', 'introduisez', 'notez', 'consignez'],
-  'entrer': ['saisir', 'renseigner', 'inscrire', 'introduire', 'noter', 'consigner'],
-  'entrez': ['saisissez', 'renseignez', 'inscrivez', 'introduisez', 'notez', 'consignez'],
-  'remplir': ['compléter', 'renseigner', 'saisir', 'garnir'],
-  'remplissez': ['complétez', 'renseignez', 'saisissez', 'garnissez'],
-  'renseigner': ['saisir', 'entrer', 'compléter', 'indiquer', 'inscrire', 'préciser'],
-  'renseignez': ['saisissez', 'entrez', 'complétez', 'indiquez', 'inscrivez', 'précisez'],
-  'indiquer': ['préciser', 'mentionner', 'signaler', 'renseigner', 'noter', 'montrer', 'spécifier'],
-  'indiquez': ['précisez', 'mentionnez', 'signalez', 'renseignez', 'notez', 'montrez', 'spécifiez'],
-  'mentionner': ['indiquer', 'signaler', 'préciser', 'citer', 'noter', 'évoquer'],
-  'préciser': ['spécifier', 'détailler', 'indiquer', 'clarifier', 'mentionner', 'expliciter'],
-  'précisez': ['spécifiez', 'détaillez', 'indiquez', 'clarifiez', 'mentionnez', 'explicitez'],
-
-  // --- Communication ---
-  'contacter': ['joindre', 'solliciter', 'appeler'],
-  'contactez': ['joignez', 'sollicitez', 'appelez'],
-  'joindre': ['contacter', 'solliciter', 'appeler'],
-  'joignez': ['contactez', 'sollicitez', 'appelez'],
-  'répondre': ['répliquer', 'donner suite', 'réagir', 'rétorquer', 'accuser réception'],
-  'répondez': ['répliquez', 'donnez suite', 'réagissez', 'rétorquez', 'accusez réception'],
-  'signaler': ['indiquer', 'notifier', 'informer', 'communiquer', 'annoncer', 'mentionner', 'préciser'],
-  'signalez': ['indiquez', 'notifiez', 'informez', 'communiquez', 'annoncez', 'mentionnez', 'précisez'],
-  'notifier': ['signaler', 'informer', 'communiquer', 'annoncer', 'aviser', 'prévenir', 'indiquer'],
-  'notifiez': ['signalez', 'informez', 'communiquez', 'annoncez', 'avisez', 'prévenez', 'indiquez'],
-  'informer': ['prévenir', 'notifier', 'aviser', 'signaler', 'communiquer', 'renseigner', 'annoncer'],
-  'informez': ['prévenez', 'notifiez', 'avisez', 'signalez', 'communiquez', 'renseignez', 'annoncez'],
-  'prévenir': ['informer', 'avertir', 'notifier', 'aviser', 'signaler', 'alerter'],
-  'prévenez': ['informez', 'avertissez', 'notifiez', 'avisez', 'signalez', 'alertez'],
-  'avertir': ['prévenir', 'informer', 'notifier', 'signaler', 'aviser', 'alerter'],
-  'avertissez': ['prévenez', 'informez', 'notifiez', 'signalez', 'avisez', 'alertez'],
-  'communiquer': ['transmettre', 'partager', 'faire parvenir', 'diffuser', 'relayer', 'notifier', 'adresser'],
-  'communiquez': ['transmettez', 'partagez', 'faites parvenir', 'diffusez', 'relayez', 'notifiez', 'adressez'],
-  'communiqué': ['transmis', 'partagé', 'diffusé', 'relayé', 'notifié', 'adressé'],
-  'transmettre': ['communiquer', 'faire parvenir', 'relayer', 'acheminer', 'adresser', 'diffuser', 'envoyer'],
-  'transmettez': ['communiquez', 'faites parvenir', 'relayez', 'acheminez', 'adressez', 'diffusez', 'envoyez'],
-  'transmis': ['communiqué', 'relayé', 'acheminé', 'adressé', 'diffusé', 'envoyé'],
-  'envoyer': ['transmettre', 'expédier', 'adresser', 'faire parvenir', 'acheminer', 'communiquer', 'relayer'],
-  'envoyez': ['transmettez', 'expédiez', 'adressez', 'faites parvenir', 'acheminez', 'communiquez', 'relayez'],
-  'envoyé': ['transmis', 'expédié', 'adressé', 'acheminé', 'communiqué', 'relayé'],
-  'adresser': ['envoyer', 'transmettre', 'faire parvenir', 'communiquer', 'expédier'],
-  'adressez': ['envoyez', 'transmettez', 'faites parvenir', 'communiquez', 'expédiez'],
-
-  // --- Connaissance / information ---
-  'connaître': ['savoir', 'maîtriser', 'être informé de', 'avoir connaissance de'],
-  'comprendre': ['saisir', 'appréhender', 'concevoir', 'assimiler', 'percevoir'],
-  'comprenez': ['saisissez', 'appréhendez', 'concevez', 'assimilez', 'percevez'],
-  'expliquer': ['exposer', 'préciser', 'détailler', 'clarifier', 'éclaircir', 'développer'],
-  'expliquez': ['exposez', 'précisez', 'détaillez', 'clarifiez', 'éclaircissez', 'développez'],
-  'clarifier': ['éclaircir', 'expliquer', 'préciser', 'élucider', 'détailler', 'exposer'],
-  'clarifiez': ['éclaircissez', 'expliquez', 'précisez', 'élucidez', 'détaillez', 'exposez'],
-
-  // --- Contrôle / vigilance ---
-  'surveiller': ['contrôler', 'observer', 'superviser', 'monitorer', 'suivre'],
-  'surveillez': ['contrôlez', 'observez', 'supervisez', 'monitorez', 'suivez'],
-  'contrôler': ['vérifier', 'inspecter', 'examiner', 'auditer', 'superviser', 'analyser'],
-  'contrôlez': ['vérifiez', 'inspectez', 'examinez', 'auditez', 'supervisez', 'analysez'],
   'vérifier': ['contrôler', 'examiner', 'confirmer', 'valider', 'inspecter', 'attester', 'authentifier'],
-  'vérifiez': ['contrôlez', 'examinez', 'confirmez', 'validez', 'inspectez', 'attestez', 'authentifiez'],
-  'vérifié': ['contrôlé', 'examiné', 'confirmé', 'validé', 'inspecté', 'attesté', 'authentifié'],
-  'examiner': ['analyser', 'étudier', 'inspecter', 'contrôler', 'auditer', 'ausculter'],
-  'examinez': ['analysez', 'étudiez', 'inspectez', 'contrôlez', 'auditez', 'ausculter'],
-  'analyser': ['examiner', 'étudier', 'évaluer', 'inspecter', 'ausculter', 'décortiquer'],
-  'analysez': ['examinez', 'étudiez', 'évaluez', 'inspectez', 'auscultez', 'décortiquez'],
-  'évaluer': ['estimer', 'apprécier', 'analyser', 'mesurer', 'juger', 'examiner'],
-  'évaluez': ['estimez', 'appréciez', 'analysez', 'mesurez', 'jugez', 'examinez'],
-
-  // --- Autres verbes courants ---
+  'contrôler': ['vérifier', 'inspecter', 'examiner', 'auditer', 'superviser', 'analyser'],
   'utiliser': ['employer', 'exploiter', 'se servir de', 'recourir à', 'user de', 'mobiliser'],
-  'utilisez': ['employez', 'exploitez', 'servez-vous de', 'recourez à', 'usez de', 'mobilisez'],
-  'utilisé': ['employé', 'exploité', 'mobilisé'],
-  'employer': ['utiliser', 'exploiter', 'recourir à', 'se servir de', 'user de', 'mobiliser'],
   'accéder': ['entrer', 'parvenir', 'atteindre', 'joindre', 'gagner'],
-  'accédez': ['entrez', 'parvenez à', 'atteignez', 'joignez', 'gagnez'],
   'obtenir': ['recevoir', 'récupérer', 'acquérir', 'gagner', 'décrocher'],
-  'obtenez': ['recevez', 'récupérez', 'acquérez', 'gagnez', 'décrochez'],
-  'obtenu': ['reçu', 'récupéré', 'acquis', 'gagné', 'décroché'],
+  'envoyer': ['transmettre', 'expédier', 'adresser', 'faire parvenir', 'acheminer', 'communiquer', 'relayer'],
+  'modifier': ['changer', 'ajuster', 'réviser', 'adapter', 'transformer', 'actualiser', 'corriger'],
+  'actualiser': ['renouveler', 'rafraîchir', 'réviser', 'mettre à jour', 'moderniser', 'réactualiser'],
+  'optimiser': ['améliorer', 'perfectionner', 'affiner', 'bonifier', 'rehausser'],
+  'améliorer': ['perfectionner', 'optimiser', 'affiner', 'bonifier', 'rehausser', 'enrichir'],
+  'garantir': ['assurer', 'offrir', 'procurer', 'maintenir', 'préserver', 'sécuriser', 'permettre'],
+  'assurer': ['garantir', 'offrir', 'procurer', 'maintenir', 'préserver', 'permettre'],
+  'communiquer': ['transmettre', 'partager', 'faire parvenir', 'diffuser', 'relayer', 'notifier', 'adresser'],
+  'transmettre': ['communiquer', 'faire parvenir', 'relayer', 'acheminer', 'adresser', 'diffuser', 'envoyer'],
+  'protéger': ['préserver', 'sécuriser', 'sauvegarder', 'défendre', 'garantir'],
+  'sauvegarder': ['préserver', 'protéger', 'conserver', 'enregistrer', 'sécuriser', 'archiver'],
+  'préserver': ['protéger', 'sauvegarder', 'maintenir', 'conserver', 'sécuriser', 'défendre'],
+  'sécuriser': ['protéger', 'préserver', 'sauvegarder', 'défendre', 'garantir'],
+  'compléter': ['finaliser', 'achever', 'terminer', 'parachever', 'clôturer', 'boucler', 'conclure'],
+  'finaliser': ['compléter', 'achever', 'terminer', 'clôturer', 'boucler', 'parachever', 'conclure'],
+  'terminer': ['achever', 'finaliser', 'clôturer', 'compléter', 'boucler', 'parachever', 'conclure'],
+  'commencer': ['débuter', 'entamer', 'amorcer', 'initier', 'engager', 'lancer', 'démarrer'],
+  'lancer': ['démarrer', 'initier', 'entamer', 'engager', 'amorcer', 'débuter', 'déclencher'],
+  'démarrer': ['lancer', 'commencer', 'entamer', 'initier', 'amorcer', 'débuter', 'engager'],
+  'nécessiter': ['requérir', 'exiger', 'impliquer', 'demander', 'réclamer'],
+  'exiger': ['requérir', 'nécessiter', 'imposer', 'réclamer', 'demander'],
+  'requérir': ['nécessiter', 'exiger', 'demander', 'réclamer', 'impliquer'],
+  'recevoir': ['obtenir', 'récupérer', 'accueillir', 'percevoir'],
   'récupérer': ['retrouver', 'reprendre', 'obtenir', 'recouvrer', 'regagner'],
-  'récupérez': ['retrouvez', 'reprenez', 'obtenez', 'recouvrez', 'regagnez'],
   'restaurer': ['rétablir', 'récupérer', 'reconstituer', 'restituer', 'remettre en état'],
-  'restaurez': ['rétablissez', 'récupérez', 'reconstituez', 'restituez', 'remettez en état'],
-  'restauré': ['rétabli', 'récupéré', 'reconstitué', 'restitué', 'remis en état'],
   'rétablir': ['restaurer', 'reconstituer', 'restituer', 'remettre en état', 'récupérer'],
-  'rétablissez': ['restaurez', 'reconstituez', 'restituez', 'remettez en état', 'récupérez'],
-  'rétabli': ['restauré', 'reconstitué', 'restitué', 'remis en état', 'récupéré'],
   'suspendre': ['interrompre', 'ajourner', 'reporter', 'geler', 'stopper'],
-  'suspendu': ['interrompu', 'ajourné', 'reporté', 'gelé', 'stoppé'],
   'bloquer': ['empêcher', 'suspendre', 'geler', 'stopper', 'entraver'],
-  'bloqué': ['suspendu', 'gelé', 'interrompu', 'stoppé', 'entravé'],
   'débloquer': ['libérer', 'lever', 'restaurer', 'dégager', 'réactiver'],
   'activer': ['enclencher', 'lancer', 'mettre en marche', 'déclencher', 'réactiver'],
-  'activez': ['enclenchez', 'lancez', 'mettez en marche', 'déclenchez', 'réactivez'],
-  'activé': ['enclenché', 'lancé', 'déclenché', 'réactivé'],
   'désactiver': ['arrêter', 'interrompre', 'suspendre', 'stopper', 'inhiber'],
-  'désactivé': ['arrêté', 'interrompu', 'suspendu', 'stoppé', 'inhibé'],
-  'recevoir': ['obtenir', 'récupérer', 'accueillir', 'percevoir'],
-  'recevez': ['obtenez', 'récupérez', 'accueillez', 'percevez'],
-  'reçu': ['obtenu', 'récupéré', 'accueilli', 'perçu'],
-
-
-  // ═══════════════════════════════════════════════════════════════
-  // NOMS — genre grammatical préservé
-  // ═══════════════════════════════════════════════════════════════
-
-  // --- Problèmes (masculin) ---
+  'cliquer': ['appuyer', 'presser', 'sélectionner', 'actionner', 'toucher'],
+  'sélectionner': ['choisir', 'retenir', 'désigner', 'cocher', 'opter pour', 'préférer'],
+  'choisir': ['sélectionner', 'retenir', 'désigner', 'opter pour', 'préférer', 'cocher'],
+  'valider': ['confirmer', 'approuver', 'entériner', 'homologuer', 'certifier', 'ratifier', 'attester'],
+  'confirmer': ['valider', 'attester', 'certifier', 'entériner', 'approuver', 'ratifier'],
+  'saisir': ['entrer', 'renseigner', 'inscrire', 'introduire', 'noter', 'consigner'],
+  'entrer': ['saisir', 'renseigner', 'inscrire', 'introduire', 'noter', 'consigner'],
+  'remplir': ['compléter', 'renseigner', 'saisir', 'garnir'],
+  'renseigner': ['saisir', 'entrer', 'compléter', 'indiquer', 'inscrire', 'préciser'],
+  'indiquer': ['préciser', 'mentionner', 'signaler', 'renseigner', 'noter', 'montrer', 'spécifier'],
+  'mentionner': ['indiquer', 'signaler', 'préciser', 'citer', 'noter', 'évoquer'],
+  'préciser': ['spécifier', 'détailler', 'indiquer', 'clarifier', 'mentionner', 'expliciter'],
+  'contacter': ['joindre', 'solliciter', 'appeler'],
+  'joindre': ['contacter', 'solliciter', 'appeler'],
+  'répondre': ['répliquer', 'donner suite', 'réagir', 'rétorquer', 'accuser réception'],
+  'signaler': ['indiquer', 'notifier', 'informer', 'communiquer', 'annoncer', 'mentionner', 'préciser'],
+  'notifier': ['signaler', 'informer', 'communiquer', 'annoncer', 'aviser', 'prévenir', 'indiquer'],
+  'informer': ['prévenir', 'notifier', 'aviser', 'signaler', 'communiquer', 'renseigner', 'annoncer'],
+  'prévenir': ['informer', 'avertir', 'notifier', 'aviser', 'signaler', 'alerter'],
+  'avertir': ['prévenir', 'informer', 'notifier', 'signaler', 'aviser', 'alerter'],
+  'connaître': ['savoir', 'maîtriser', 'être informé de', 'avoir connaissance de'],
+  'comprendre': ['saisir', 'appréhender', 'concevoir', 'assimiler', 'percevoir'],
+  'expliquer': ['exposer', 'préciser', 'détailler', 'clarifier', 'éclaircir', 'développer'],
+  'clarifier': ['éclaircir', 'expliquer', 'préciser', 'élucider', 'détailler', 'exposer'],
+  'surveiller': ['contrôler', 'observer', 'superviser', 'monitorer', 'suivre'],
+  'examiner': ['analyser', 'étudier', 'inspecter', 'contrôler', 'auditer', 'ausculter'],
+  'analyser': ['examiner', 'étudier', 'évaluer', 'inspecter', 'ausculter', 'décortiquer'],
+  'évaluer': ['estimer', 'apprécier', 'analyser', 'mesurer', 'juger', 'examiner'],
+  
+  // NOMS
   'problème': ['souci', 'incident', 'dysfonctionnement', 'défaut', 'ennui', 'désagrément'],
   'problèmes': ['soucis', 'incidents', 'dysfonctionnements', 'défauts', 'ennuis', 'désagréments'],
   'incident': ['événement', 'problème', 'dysfonctionnement', 'souci', 'contretemps'],
-  'incidents': ['événements', 'problèmes', 'dysfonctionnements', 'soucis', 'contretemps'],
   'dysfonctionnement': ['problème', 'incident', 'défaut', 'défaillance', 'souci'],
-  'dysfonctionnements': ['problèmes', 'incidents', 'défauts', 'défaillances', 'soucis'],
   'défaut': ['problème', 'dysfonctionnement', 'vice', 'incident'],
-  'défauts': ['problèmes', 'dysfonctionnements', 'vices', 'incidents'],
   'risque': ['danger', 'péril', 'aléa', 'menace'],
-  'risques': ['dangers', 'périls', 'aléas', 'menaces'],
   'danger': ['risque', 'péril', 'menace', 'aléa'],
-  'dangers': ['risques', 'périls', 'menaces', 'aléas'],
-
-  // --- Problèmes (féminin) ---
   'anomalie': ['irrégularité', 'défaillance', 'incohérence', 'aberration'],
-  'anomalies': ['irrégularités', 'défaillances', 'incohérences', 'aberrations'],
   'irrégularité': ['anomalie', 'défaillance', 'incohérence', 'inexactitude'],
-  'irrégularités': ['anomalies', 'défaillances', 'incohérences', 'inexactitudes'],
   'faille': ['vulnérabilité', 'brèche', 'faiblesse', 'lacune', 'défaut'],
-  'failles': ['vulnérabilités', 'brèches', 'faiblesses', 'lacunes', 'défauts'],
   'erreur': ['inexactitude', 'méprise', 'faute', 'anomalie', 'irrégularité'],
-  'erreurs': ['inexactitudes', 'méprises', 'fautes', 'anomalies', 'irrégularités'],
   'vulnérabilité': ['faille', 'faiblesse', 'brèche', 'défaut'],
-  'vulnérabilités': ['failles', 'faiblesses', 'brèches', 'défauts'],
   'menace': ['danger', 'risque', 'péril', 'intimidation'],
-  'menaces': ['dangers', 'risques', 'périls', 'intimidations'],
-
-  // --- Information / données (féminin) ---
   'informations': ['données', 'renseignements', 'coordonnées', 'précisions', 'éléments'],
   'données': ['informations', 'renseignements', 'éléments', 'précisions', 'coordonnées'],
   'renseignements': ['informations', 'précisions', 'détails', 'coordonnées', 'éléments'],
   'précisions': ['détails', 'clarifications', 'informations', 'renseignements', 'éléments'],
   'coordonnées': ['informations', 'renseignements', 'données', 'éléments'],
-
-  // --- Information (masculin) ---
   'détails': ['précisions', 'éléments', 'renseignements', 'informations', 'points'],
   'éléments': ['informations', 'renseignements', 'détails', 'précisions', 'points'],
   'document': ['fichier', 'formulaire', 'écrit', 'support'],
-  'documents': ['fichiers', 'formulaires', 'écrits', 'supports'],
   'fichier': ['document', 'formulaire', 'support'],
-  'fichiers': ['documents', 'formulaires', 'supports'],
   'formulaire': ['document', 'fichier', 'imprimé'],
-  'formulaires': ['documents', 'fichiers', 'imprimés'],
-
-  // --- Compte / accès (masculin) ---
   'compte': ['espace', 'profil', 'dossier', 'abonnement'],
   'comptes': ['espaces', 'profils', 'dossiers', 'abonnements'],
   'espace': ['compte', 'profil', 'dossier'],
-  'espaces': ['comptes', 'profils', 'dossiers'],
   'profil': ['compte', 'espace', 'dossier', 'fiche'],
-  'profils': ['comptes', 'espaces', 'dossiers', 'fiches'],
-  // 'accès' n'a plus de synonyme substituable en gardant la grammaire :
-  // 'connexion', 'entrée', 'ouverture' sont féminins, ce qui casse l'accord
-  // de l'article et de l'adjectif qui suit ("un accès sécurisé" → "une connexion sécurisée").
   'identifiant': ['code', 'référence', 'login'],
-  'identifiants': ['codes', 'références', 'logins'],
   'dossier': ['compte', 'profil', 'fichier', 'document'],
-  'dossiers': ['comptes', 'profils', 'fichiers', 'documents'],
-
-  // --- Connexion (féminin) ---
   'connexion': ['liaison', 'ouverture', 'session'],
-  'connexions': ['liaisons', 'ouvertures', 'sessions'],
   'session': ['connexion', 'séance'],
-  'sessions': ['connexions', 'séances'],
-
-  // --- Services / prestations ---
   'services': ['prestations', 'offres', 'solutions', 'fonctions'],
   'prestations': ['services', 'offres', 'solutions', 'fournitures'],
   'solution': ['réponse', 'alternative', 'option', 'recours', 'issue'],
-  'solutions': ['réponses', 'alternatives', 'options', 'recours', 'issues'],
   'option': ['choix', 'alternative', 'possibilité', 'faculté', 'variante'],
-  'options': ['choix', 'alternatives', 'possibilités', 'facultés', 'variantes'],
   'offre': ['proposition', 'prestation', 'service', 'solution'],
-  'offres': ['propositions', 'prestations', 'services', 'solutions'],
-
-  // --- Vérification / authentification (féminin) ---
   'identification': ['authentification', 'reconnaissance', 'vérification', 'confirmation'],
   'authentification': ['identification', 'vérification', 'confirmation', 'certification'],
   'vérification': ['contrôle', 'authentification', 'inspection', 'confirmation', 'validation'],
-  'vérifications': ['contrôles', 'inspections', 'confirmations', 'validations'],
   'validation': ['confirmation', 'approbation', 'homologation', 'ratification', 'certification'],
-  'validations': ['confirmations', 'approbations', 'homologations', 'ratifications'],
   'confirmation': ['validation', 'attestation', 'approbation', 'ratification', 'certification'],
-  'confirmations': ['validations', 'attestations', 'approbations', 'ratifications'],
   'certification': ['validation', 'homologation', 'attestation', 'authentification'],
-  'certifications': ['validations', 'homologations', 'attestations'],
   'inspection': ['contrôle', 'examen', 'vérification', 'audit'],
-  'inspections': ['contrôles', 'examens', 'vérifications', 'audits'],
   'reconnaissance': ['identification', 'authentification', 'validation'],
-
-  // --- Vérification (masculin) ---
   'contrôle': ['vérification', 'examen', 'inspection', 'audit', 'supervision'],
-  'contrôles': ['vérifications', 'examens', 'inspections', 'audits', 'supervisions'],
   'audit': ['contrôle', 'inspection', 'examen', 'vérification', 'analyse'],
-  'audits': ['contrôles', 'inspections', 'examens', 'vérifications', 'analyses'],
   'examen': ['contrôle', 'inspection', 'analyse', 'étude', 'vérification'],
-  'examens': ['contrôles', 'inspections', 'analyses', 'études', 'vérifications'],
-
-  // --- Temps (masculin) ---
-  // 'délais' est intentionnellement sans synonyme : dans les expressions
-  // figées ("dans les plus brefs délais", "dans les meilleurs délais"),
-  // aucun synonyme ne fonctionne sans casser la locution.
   'moment': ['instant', 'temps'],
-  'moments': ['instants', 'temps'],
-
-  // --- Temps (féminin) ---
   'échéance': ['date limite', 'expiration', 'date butoir'],
-  'échéances': ['dates limites', 'dates butoirs'],
   'période': ['durée', 'phase', 'intervalle'],
-  'périodes': ['durées', 'phases', 'intervalles'],
   'durée': ['période', 'phase'],
-  'durées': ['périodes', 'phases'],
   'date': ['échéance', 'jour'],
-  'dates': ['échéances', 'jours'],
-
-  // --- Structure ---
   'équipe': ['cellule', 'unité'],
-  'équipes': ['cellules', 'unités'],
   'département': ['service', 'bureau', 'pôle', 'division', 'section'],
-  'départements': ['services', 'bureaux', 'pôles', 'divisions', 'sections'],
   'bureau': ['service', 'département', 'agence', 'cabinet'],
-  'bureaux': ['services', 'départements', 'agences', 'cabinets'],
   'division': ['département', 'section', 'branche', 'unité'],
-  'divisions': ['départements', 'sections', 'branches', 'unités'],
   'section': ['département', 'division', 'branche', 'partie'],
-  'sections': ['départements', 'divisions', 'branches', 'parties'],
-
-  // --- Assistance (féminin) ---
   'assistance': ['aide', 'appui', 'accompagnement', 'entraide'],
   'aide': ['assistance', 'appui', 'accompagnement', 'entraide'],
-
-  // --- Support (masculin) ---
   'support': ['appui', 'accompagnement', 'soutien', 'renfort'],
   'soutien': ['appui', 'accompagnement', 'support', 'renfort'],
   'accompagnement': ['suivi', 'soutien', 'appui', 'assistance', 'encadrement'],
   'appui': ['support', 'soutien', 'accompagnement', 'assistance', 'aide'],
-
-  // --- Plateformes (féminin) ---
   'plateforme': ['interface', 'infrastructure'],
-  'plateformes': ['interfaces', 'infrastructures'],
   'interface': ['plateforme', 'panneau'],
   'application': ['logiciel', 'programme', 'outil', 'appli'],
-  'applications': ['logiciels', 'programmes', 'outils', 'applis'],
   'page': ['écran', 'interface', 'onglet'],
-  'pages': ['écrans', 'interfaces', 'onglets'],
-
-  // --- Plateformes (masculin) ---
   'site': ['portail', 'espace'],
-  'sites': ['portails', 'espaces'],
   'portail': ['site', 'espace'],
-  'portails': ['sites', 'espaces'],
   'logiciel': ['programme', 'outil', 'application', 'utilitaire'],
-  'logiciels': ['programmes', 'outils', 'applications', 'utilitaires'],
   'programme': ['logiciel', 'application', 'outil'],
-  'programmes': ['logiciels', 'applications', 'outils'],
   'système': ['dispositif', 'mécanisme', 'infrastructure'],
-  'systèmes': ['dispositifs', 'mécanismes', 'infrastructures'],
   'outil': ['logiciel', 'programme', 'application', 'utilitaire'],
-  'outils': ['logiciels', 'programmes', 'applications', 'utilitaires'],
-
-  // --- Messagerie ---
   'email': ['courriel', 'mail', 'message'],
-  'emails': ['courriels', 'mails', 'messages'],
   'courriel': ['email', 'mail', 'message'],
-  'courriels': ['emails', 'mails', 'messages'],
   'message': ['courriel', 'communication', 'notification', 'email'],
-  'messages': ['courriels', 'communications', 'notifications', 'emails'],
   'notification': ['message', 'alerte', 'communication', 'avis', 'signalement'],
-  'notifications': ['messages', 'alertes', 'communications', 'avis', 'signalements'],
   'communication': ['message', 'notification', 'échange', 'information', 'avis'],
-  'communications': ['messages', 'notifications', 'échanges', 'informations', 'avis'],
   'alerte': ['notification', 'avertissement', 'signal', 'avis'],
-  'alertes': ['notifications', 'avertissements', 'signaux', 'avis'],
   'avis': ['notification', 'message', 'communication', 'annonce'],
-
-  // --- Personnes / rôles ---
   'client': ['utilisateur', 'abonné', 'usager', 'membre'],
-  'clients': ['utilisateurs', 'abonnés', 'usagers', 'membres'],
   'utilisateur': ['client', 'usager', 'abonné', 'membre', 'internaute'],
-  'utilisateurs': ['clients', 'usagers', 'abonnés', 'membres', 'internautes'],
   'abonné': ['client', 'membre', 'adhérent', 'usager', 'souscripteur'],
-  'abonnés': ['clients', 'membres', 'adhérents', 'usagers', 'souscripteurs'],
   'membre': ['adhérent', 'abonné', 'inscrit', 'affilié'],
-  'membres': ['adhérents', 'abonnés', 'inscrits', 'affiliés'],
   'usager': ['utilisateur', 'client', 'abonné'],
-  'usagers': ['utilisateurs', 'clients', 'abonnés'],
-
-  // --- Sécurité (féminin) ---
   'sécurité': ['protection', 'sûreté', 'sauvegarde'],
   'protection': ['sécurité', 'sauvegarde', 'préservation'],
   'sûreté': ['sécurité', 'protection', 'fiabilité'],
   'confidentialité': ['discrétion', 'secret'],
   'intégrité': ['authenticité', 'exactitude'],
   'fiabilité': ['crédibilité', 'sûreté', 'solidité'],
-
-  // --- Entités (féminin) ---
   'entreprise': ['société', 'compagnie', 'structure', 'firme', 'maison'],
-  'entreprises': ['sociétés', 'compagnies', 'structures', 'firmes', 'maisons'],
   'société': ['entreprise', 'compagnie', 'structure', 'firme'],
-  'sociétés': ['entreprises', 'compagnies', 'structures', 'firmes'],
   'compagnie': ['entreprise', 'société', 'firme'],
-  'compagnies': ['entreprises', 'sociétés', 'firmes'],
   'organisation': ['structure', 'entité', 'organisme'],
-  'organisations': ['structures', 'entités', 'organismes'],
   'institution': ['organisme', 'établissement', 'entité', 'organisation'],
-  'institutions': ['organismes', 'établissements', 'entités', 'organisations'],
   'agence': ['bureau', 'antenne', 'succursale'],
-  'agences': ['bureaux', 'antennes', 'succursales'],
   'structure': ['organisation', 'entité', 'organisme'],
-  'structures': ['organisations', 'entités', 'organismes'],
-
-  // --- Entités (masculin) ---
   'organisme': ['établissement', 'organisation', 'institution', 'entité'],
-  'organismes': ['établissements', 'organisations', 'institutions', 'entités'],
   'établissement': ['organisme', 'institution', 'structure'],
-  'établissements': ['organismes', 'institutions', 'structures'],
-
-  // --- Concepts (féminin) ---
   'demande': ['requête', 'sollicitation', 'question'],
-  'demandes': ['requêtes', 'sollicitations', 'questions'],
   'requête': ['demande', 'sollicitation', 'question'],
-  'requêtes': ['demandes', 'sollicitations', 'questions'],
   'procédure': ['démarche', 'marche à suivre', 'méthode', 'protocole'],
-  'procédures': ['démarches', 'méthodes', 'protocoles'],
   'démarche': ['procédure', 'approche', 'méthode', 'action'],
-  'démarches': ['procédures', 'approches', 'méthodes', 'actions'],
   'méthode': ['approche', 'manière', 'procédé', 'procédure', 'technique'],
-  'méthodes': ['approches', 'manières', 'procédés', 'procédures', 'techniques'],
   'condition': ['clause', 'modalité', 'critère', 'exigence', 'stipulation'],
-  'conditions': ['clauses', 'modalités', 'critères', 'exigences', 'stipulations'],
   'exigence': ['obligation', 'condition', 'requête', 'nécessité'],
-  'exigences': ['obligations', 'conditions', 'requêtes', 'nécessités'],
   'obligation': ['exigence', 'contrainte', 'devoir', 'engagement', 'nécessité'],
-  'obligations': ['exigences', 'contraintes', 'devoirs', 'engagements', 'nécessités'],
   'convention': ['accord', 'entente', 'contrat', 'pacte'],
-  'conventions': ['accords', 'ententes', 'contrats', 'pactes'],
   'modalité': ['condition', 'clause', 'critère', 'manière'],
-  'modalités': ['conditions', 'clauses', 'critères', 'manières'],
   'clause': ['condition', 'modalité', 'stipulation', 'critère'],
-  'clauses': ['conditions', 'modalités', 'stipulations', 'critères'],
-
-  // --- Concepts (masculin) ---
   'processus': ['mécanisme', 'déroulement', 'procédé', 'cheminement'],
   'engagement': ['obligation', 'promesse', 'devoir'],
-  'engagements': ['obligations', 'promesses', 'devoirs'],
   'contrat': ['accord', 'convention', 'entente', 'pacte'],
-  'contrats': ['accords', 'conventions', 'ententes', 'pactes'],
   'accord': ['entente', 'convention', 'pacte', 'contrat'],
-  'accords': ['ententes', 'conventions', 'pactes', 'contrats'],
   'critère': ['condition', 'clause', 'exigence', 'modalité'],
-  'critères': ['conditions', 'clauses', 'exigences', 'modalités'],
-
-
-  // ═══════════════════════════════════════════════════════════════
-  // ADJECTIFS — accords en genre et nombre respectés
-  // ═══════════════════════════════════════════════════════════════
-
-  // --- Relations (féminin pluriel) ---
-  'associées': ['liées', 'rattachées', 'relatives', 'attachées', 'reliées', 'connectées'],
-  'liées': ['associées', 'rattachées', 'attachées', 'reliées', 'connectées', 'relatives'],
-  'rattachées': ['liées', 'associées', 'attachées', 'reliées', 'connectées'],
-  'relatives': ['associées', 'liées', 'rattachées', 'attachées', 'concernant'],
-
-  // --- Relations (masculin pluriel) ---
-  'associés': ['liés', 'rattachés', 'relatifs', 'attachés', 'reliés', 'connectés'],
-  'liés': ['associés', 'rattachés', 'attachés', 'reliés', 'connectés', 'relatifs'],
-  'rattachés': ['liés', 'associés', 'attachés', 'reliés', 'connectés'],
-  'relatifs': ['associés', 'liés', 'rattachés', 'attachés'],
-
-  // --- Relations (singulier) ---
-  'associé': ['lié', 'rattaché', 'relatif', 'attaché', 'relié', 'connecté'],
-  'associée': ['liée', 'rattachée', 'relative', 'attachée', 'reliée', 'connectée'],
-  'lié': ['associé', 'rattaché', 'attaché', 'relié', 'connecté', 'relatif'],
-  'liée': ['associée', 'rattachée', 'attachée', 'reliée', 'connectée', 'relative'],
-
-  // --- Nature numérique ---
-  'numérique': ['digital', 'informatique', 'électronique', 'en ligne', 'dématérialisé'],
-  'numériques': ['digitaux', 'informatiques', 'électroniques', 'dématérialisés'],
-  'digital': ['numérique', 'électronique', 'informatique', 'dématérialisé'],
-  'digitale': ['numérique', 'électronique', 'informatique', 'dématérialisée'],
-  'digitaux': ['numériques', 'électroniques', 'informatiques', 'dématérialisés'],
-  'informatique': ['numérique', 'digital', 'électronique'],
-  'informatiques': ['numériques', 'digitaux', 'électroniques'],
-  'électronique': ['numérique', 'digital', 'informatique', 'dématérialisé'],
-  'électroniques': ['numériques', 'digitaux', 'informatiques', 'dématérialisés'],
-
-  // --- Modernité ---
-  'moderne': ['récent', 'actuel', 'contemporain', 'nouveau', 'innovant'],
-  'modernes': ['récents', 'actuels', 'contemporains', 'nouveaux', 'innovants'],
-  'récent': ['nouveau', 'moderne', 'actuel', 'contemporain', 'neuf'],
-  'récente': ['nouvelle', 'moderne', 'actuelle', 'contemporaine', 'neuve'],
-  'récents': ['nouveaux', 'modernes', 'actuels', 'contemporains', 'neufs'],
-  'récentes': ['nouvelles', 'modernes', 'actuelles', 'contemporaines', 'neuves'],
-  'nouveau': ['récent', 'neuf', 'moderne', 'inédit'],
-  'nouvelle': ['récente', 'neuve', 'moderne', 'inédite'],
-  'nouveaux': ['récents', 'neufs', 'modernes', 'inédits'],
-  'nouvelles': ['récentes', 'neuves', 'modernes', 'inédites'],
-  'actuel': ['récent', 'moderne', 'contemporain', 'présent'],
-  'actuelle': ['récente', 'moderne', 'contemporaine', 'présente'],
-
-  // --- État actif ---
-  'actif': ['ouvert', 'fonctionnel', 'valide', 'opérationnel', 'en cours', 'utilisable'],
-  'active': ['ouverte', 'fonctionnelle', 'valide', 'opérationnelle', 'en cours', 'utilisable'],
-  'actifs': ['ouverts', 'fonctionnels', 'valides', 'opérationnels', 'utilisables'],
-  'actives': ['ouvertes', 'fonctionnelles', 'valides', 'opérationnelles', 'utilisables'],
-  'inactif': ['fermé', 'suspendu', 'invalide', 'bloqué', 'désactivé', 'inutilisable'],
-  'inactive': ['fermée', 'suspendue', 'invalide', 'bloquée', 'désactivée', 'inutilisable'],
-  'inactifs': ['fermés', 'suspendus', 'invalides', 'bloqués', 'désactivés', 'inutilisables'],
-  'inactives': ['fermées', 'suspendues', 'invalides', 'bloquées', 'désactivées', 'inutilisables'],
-
-  // --- Disponibilité ---
-  'disponible': ['accessible', 'utilisable', 'libre', 'ouvert', 'joignable'],
-  'disponibles': ['accessibles', 'utilisables', 'libres', 'ouverts', 'joignables'],
-  'accessible': ['disponible', 'utilisable', 'ouvert', 'atteignable', 'joignable'],
-  'accessibles': ['disponibles', 'utilisables', 'ouverts', 'atteignables', 'joignables'],
-
-  // --- Fonctionnement ---
-  'fonctionnel': ['opérationnel', 'actif', 'utilisable', 'performant'],
-  'fonctionnelle': ['opérationnelle', 'active', 'utilisable', 'performante'],
-  'fonctionnels': ['opérationnels', 'actifs', 'utilisables', 'performants'],
-  'fonctionnelles': ['opérationnelles', 'actives', 'utilisables', 'performantes'],
-  'opérationnel': ['fonctionnel', 'actif', 'utilisable', 'prêt'],
-  'opérationnelle': ['fonctionnelle', 'active', 'utilisable', 'prête'],
-  'opérationnels': ['fonctionnels', 'actifs', 'utilisables', 'prêts'],
-  'opérationnelles': ['fonctionnelles', 'actives', 'utilisables', 'prêtes'],
-
-  // --- Validité ---
-  'valide': ['valable', 'légitime', 'conforme', 'recevable', 'reconnu'],
-  'valides': ['valables', 'légitimes', 'conformes', 'recevables', 'reconnus'],
-  'valable': ['valide', 'légitime', 'conforme', 'recevable', 'acceptable'],
-  'valables': ['valides', 'légitimes', 'conformes', 'recevables', 'acceptables'],
-  'expiré': ['périmé', 'échu', 'dépassé', 'obsolète', 'caduc'],
-  'expirée': ['périmée', 'échue', 'dépassée', 'obsolète', 'caduque'],
-  'expirés': ['périmés', 'échus', 'dépassés', 'obsolètes', 'caducs'],
-  'expirées': ['périmées', 'échues', 'dépassées', 'obsolètes', 'caduques'],
-  'obsolète': ['dépassé', 'périmé', 'ancien', 'désuet', 'caduc'],
-  'obsolètes': ['dépassés', 'périmés', 'anciens', 'désuets', 'caducs'],
-  'conforme': ['valide', 'valable', 'régulier', 'correct'],
-  'conformes': ['valides', 'valables', 'réguliers', 'corrects'],
-
-  // --- Authenticité ---
-  'officiel': ['certifié', 'authentique', 'homologué', 'attesté', 'reconnu', 'validé'],
-  'officiels': ['certifiés', 'authentiques', 'homologués', 'attestés', 'reconnus', 'validés'],
-  'officielle': ['certifiée', 'authentique', 'homologuée', 'attestée', 'reconnue', 'validée'],
-  'officielles': ['certifiées', 'authentiques', 'homologuées', 'attestées', 'reconnues', 'validées'],
-  'authentique': ['véritable', 'officiel', 'certifié', 'attesté', 'original', 'légitime'],
-  'authentiques': ['véritables', 'officiels', 'certifiés', 'attestés', 'originaux', 'légitimes'],
-  'certifié': ['authentique', 'officiel', 'homologué', 'attesté', 'reconnu', 'validé'],
-  'certifiée': ['authentique', 'officielle', 'homologuée', 'attestée', 'reconnue', 'validée'],
-  'certifiés': ['authentiques', 'officiels', 'homologués', 'attestés', 'reconnus', 'validés'],
-  'certifiées': ['authentiques', 'officielles', 'homologuées', 'attestées', 'reconnues', 'validées'],
-  'homologué': ['certifié', 'validé', 'approuvé', 'officiel', 'attesté', 'reconnu'],
-  'homologuée': ['certifiée', 'validée', 'approuvée', 'officielle', 'attestée', 'reconnue'],
-  'homologués': ['certifiés', 'validés', 'approuvés', 'officiels', 'attestés', 'reconnus'],
-  'homologuées': ['certifiées', 'validées', 'approuvées', 'officielles', 'attestées', 'reconnues'],
-  'approuvé': ['validé', 'entériné', 'homologué', 'accepté', 'agréé', 'ratifié'],
-  'approuvée': ['validée', 'entérinée', 'homologuée', 'acceptée', 'agréée', 'ratifiée'],
-  'approuvés': ['validés', 'entérinés', 'homologués', 'acceptés', 'agréés', 'ratifiés'],
-  'approuvées': ['validées', 'entérinées', 'homologuées', 'acceptées', 'agréées', 'ratifiées'],
-  'légitime': ['valable', 'fondé', 'reconnu', 'valide', 'justifié'],
-  'légitimes': ['valables', 'fondés', 'reconnus', 'valides', 'justifiés'],
-
-  // --- Sécurité (adjectifs) ---
+  
+  // ADJECTIFS
   'sécurisé': ['protégé', 'fiable', 'sûr', 'préservé'],
-  'sécurisée': ['protégée', 'fiable', 'sûre', 'préservée'],
-  'sécurisés': ['protégés', 'fiables', 'sûrs', 'préservés'],
-  'sécurisées': ['protégées', 'fiables', 'sûres', 'préservées'],
   'protégé': ['sécurisé', 'préservé', 'défendu', 'sauvegardé'],
-  'protégée': ['sécurisée', 'préservée', 'défendue', 'sauvegardée'],
-  'protégés': ['sécurisés', 'préservés', 'défendus', 'sauvegardés'],
-  'protégées': ['sécurisées', 'préservées', 'défendues', 'sauvegardées'],
   'confidentiel': ['privé', 'discret', 'protégé', 'secret', 'personnel'],
-  'confidentielle': ['privée', 'discrète', 'protégée', 'secrète', 'personnelle'],
-  'confidentiels': ['privés', 'discrets', 'protégés', 'secrets', 'personnels'],
-  'confidentielles': ['privées', 'discrètes', 'protégées', 'secrètes', 'personnelles'],
-  // 'sensible' est invariable en genre — retirés : délicat/délicate, confidentiel/confidentielle,
-  // privé/privée, important/importante. Seul 'critique' est invariable.
   'sensible': ['critique'],
-  'sensibles': ['critiques'],
   'fiable': ['sûr', 'sécurisé', 'solide', 'crédible', 'sérieux'],
-  'fiables': ['sûrs', 'sécurisés', 'solides', 'crédibles', 'sérieux'],
-
-  // --- Efficacité ---
-  // 'fluide' est invariable en genre — ses synonymes doivent l'être aussi
-  // (retirés : harmonieux/harmonieuse, régulier/régulière)
   'fluide': ['efficace', 'souple'],
-  'fluides': ['efficaces', 'souples'],
   'efficace': ['performant', 'concluant', 'fluide', 'productif', 'opérationnel'],
-  'efficaces': ['performants', 'concluants', 'fluides', 'productifs', 'opérationnels'],
   'performant': ['efficace', 'productif', 'opérationnel', 'concluant'],
-  'performants': ['efficaces', 'productifs', 'opérationnels', 'concluants'],
-  'performante': ['efficace', 'productive', 'opérationnelle', 'concluante'],
-  'performantes': ['efficaces', 'productives', 'opérationnelles', 'concluantes'],
-
-  // --- Personnel / propre ---
-  'personnel': ['privé', 'individuel', 'particulier', 'propre'],
-  'personnels': ['privés', 'individuels', 'particuliers', 'propres'],
-  'personnelle': ['privée', 'individuelle', 'particulière', 'propre'],
-  'personnelles': ['privées', 'individuelles', 'confidentielles', 'particulières', 'propres'],
-  'privé': ['personnel', 'confidentiel', 'individuel', 'particulier'],
-  'privée': ['personnelle', 'confidentielle', 'individuelle', 'particulière'],
-  'privés': ['personnels', 'confidentiels', 'individuels', 'particuliers'],
-  'privées': ['personnelles', 'confidentielles', 'individuelles', 'particulières'],
-  'individuel': ['personnel', 'particulier', 'propre', 'privé', 'singulier'],
-  'individuelle': ['personnelle', 'particulière', 'propre', 'privée', 'singulière'],
-  'individuels': ['personnels', 'particuliers', 'propres', 'privés', 'singuliers'],
-  'individuelles': ['personnelles', 'particulières', 'propres', 'privées', 'singulières'],
-  'particulier': ['personnel', 'privé', 'individuel', 'propre', 'spécifique'],
-  'particulière': ['personnelle', 'privée', 'individuelle', 'propre', 'spécifique'],
-  'particuliers': ['personnels', 'privés', 'individuels', 'propres', 'spécifiques'],
-  'particulières': ['personnelles', 'privées', 'individuelles', 'propres', 'spécifiques'],
-  'spécifique': ['particulier', 'précis', 'défini', 'propre', 'concret'],
-  'spécifiques': ['particuliers', 'précis', 'définis', 'propres', 'concrets'],
-  'précis': ['exact', 'spécifique', 'défini', 'concret', 'clair'],
-  'précise': ['exacte', 'spécifique', 'définie', 'concrète', 'claire'],
-
-  // --- Importance ---
   'important': ['essentiel', 'majeur', 'significatif', 'considérable', 'notable', 'crucial'],
-  'importante': ['essentielle', 'majeure', 'significative', 'considérable', 'notable', 'cruciale'],
-  'importants': ['essentiels', 'majeurs', 'significatifs', 'considérables', 'notables', 'cruciaux'],
-  'importantes': ['essentielles', 'majeures', 'significatives', 'considérables', 'notables', 'cruciales'],
   'essentiel': ['fondamental', 'capital', 'primordial', 'crucial', 'indispensable', 'majeur'],
-  'essentielle': ['fondamentale', 'capitale', 'primordiale', 'cruciale', 'indispensable', 'majeure'],
-  'essentiels': ['fondamentaux', 'capitaux', 'primordiaux', 'cruciaux', 'indispensables', 'majeurs'],
-  'essentielles': ['fondamentales', 'capitales', 'primordiales', 'cruciales', 'indispensables', 'majeures'],
   'majeur': ['important', 'considérable', 'essentiel', 'principal', 'notable'],
-  'majeure': ['importante', 'considérable', 'essentielle', 'principale', 'notable'],
-  'majeurs': ['importants', 'considérables', 'essentiels', 'principaux', 'notables'],
-  'majeures': ['importantes', 'considérables', 'essentielles', 'principales', 'notables'],
   'primordial': ['essentiel', 'fondamental', 'capital', 'crucial', 'majeur'],
-  'primordiale': ['essentielle', 'fondamentale', 'capitale', 'cruciale', 'majeure'],
-  'primordiaux': ['essentiels', 'fondamentaux', 'capitaux', 'cruciaux', 'majeurs'],
-  'primordiales': ['essentielles', 'fondamentales', 'capitales', 'cruciales', 'majeures'],
   'fondamental': ['essentiel', 'capital', 'primordial', 'crucial', 'majeur'],
-  'fondamentale': ['essentielle', 'capitale', 'primordiale', 'cruciale', 'majeure'],
-  'fondamentaux': ['essentiels', 'capitaux', 'primordiaux', 'cruciaux', 'majeurs'],
-  'fondamentales': ['essentielles', 'capitales', 'primordiales', 'cruciales', 'majeures'],
   'crucial': ['essentiel', 'capital', 'décisif', 'primordial', 'critique'],
-  'cruciale': ['essentielle', 'capitale', 'décisive', 'primordiale', 'critique'],
-  'cruciaux': ['essentiels', 'capitaux', 'décisifs', 'primordiaux', 'critiques'],
-  'cruciales': ['essentielles', 'capitales', 'décisives', 'primordiales', 'critiques'],
   'capital': ['essentiel', 'fondamental', 'primordial', 'crucial', 'majeur'],
-  'capitale': ['essentielle', 'fondamentale', 'primordiale', 'cruciale', 'majeure'],
   'significatif': ['notable', 'considérable', 'important', 'remarquable'],
-  'significative': ['notable', 'considérable', 'importante', 'remarquable'],
-  'significatifs': ['notables', 'considérables', 'importants', 'remarquables'],
-  'significatives': ['notables', 'considérables', 'importantes', 'remarquables'],
   'notable': ['significatif', 'remarquable', 'considérable', 'important'],
-  'notables': ['significatifs', 'remarquables', 'considérables', 'importants'],
   'considérable': ['important', 'majeur', 'notable', 'significatif', 'substantiel'],
-  'considérables': ['importants', 'majeurs', 'notables', 'significatifs', 'substantiels'],
   'principal': ['majeur', 'essentiel', 'central', 'premier', 'primordial'],
-  'principale': ['majeure', 'essentielle', 'centrale', 'première', 'primordiale'],
-  'principaux': ['majeurs', 'essentiels', 'centraux', 'premiers', 'primordiaux'],
-  'principales': ['majeures', 'essentielles', 'centrales', 'premières', 'primordiales'],
-
-  // --- Impératif / obligatoire ---
   'impératif': ['essentiel', 'nécessaire', 'indispensable', 'obligatoire', 'primordial', 'requis', 'crucial'],
-  'impérative': ['essentielle', 'nécessaire', 'indispensable', 'obligatoire', 'primordiale', 'requise', 'cruciale'],
-  'impératifs': ['essentiels', 'nécessaires', 'indispensables', 'obligatoires', 'primordiaux', 'requis', 'cruciaux'],
-  'impératives': ['essentielles', 'nécessaires', 'indispensables', 'obligatoires', 'primordiales', 'requises', 'cruciales'],
   'nécessaire': ['indispensable', 'obligatoire', 'essentiel', 'requis', 'impératif', 'utile', 'primordial'],
-  'nécessaires': ['indispensables', 'obligatoires', 'essentiels', 'requis', 'impératifs', 'utiles', 'primordiaux'],
   'obligatoire': ['impératif', 'nécessaire', 'indispensable', 'requis', 'imposé', 'essentiel'],
-  'obligatoires': ['impératifs', 'nécessaires', 'indispensables', 'requis', 'imposés', 'essentiels'],
   'requis': ['nécessaire', 'obligatoire', 'demandé', 'attendu', 'impératif', 'exigé'],
-  'requise': ['nécessaire', 'obligatoire', 'demandée', 'attendue', 'impérative', 'exigée'],
   'indispensable': ['essentiel', 'nécessaire', 'obligatoire', 'impératif', 'primordial', 'crucial'],
-  'indispensables': ['essentiels', 'nécessaires', 'obligatoires', 'impératifs', 'primordiaux', 'cruciaux'],
-
-  // --- Urgence ---
   'urgent': ['pressant', 'prioritaire', 'immédiat', 'critique', 'impératif'],
-  'urgente': ['pressante', 'prioritaire', 'immédiate', 'critique', 'impérative'],
-  'urgents': ['pressants', 'prioritaires', 'immédiats', 'critiques', 'impératifs'],
-  'urgentes': ['pressantes', 'prioritaires', 'immédiates', 'critiques', 'impératives'],
   'immédiat': ['instantané', 'direct', 'urgent', 'prompt'],
-  'immédiate': ['instantanée', 'directe', 'urgente', 'prompte'],
-  'immédiats': ['instantanés', 'directs', 'urgents', 'prompts'],
-  'immédiates': ['instantanées', 'directes', 'urgentes', 'promptes'],
   'pressant': ['urgent', 'impératif', 'prioritaire'],
-  'pressante': ['urgente', 'impérative', 'prioritaire'],
-  // 'critique' est invariable en genre — tous ses anciens synonymes étaient variables,
-  // ce qui cassait l'accord (crucial/cruciale, délicat/délicate, sérieux/sérieuse,
-  // grave/grave OK, décisif/décisive). On garde uniquement 'grave' qui est invariable.
   'critique': ['grave'],
-  'critiques': ['graves'],
   'grave': ['sérieux', 'sévère', 'critique', 'important'],
-  'graves': ['sérieux', 'sévères', 'critiques', 'importants'],
   'prioritaire': ['urgent', 'principal', 'essentiel', 'impératif'],
-  'prioritaires': ['urgents', 'principaux', 'essentiels', 'impératifs'],
-
-  // --- Autres qualificatifs ---
+  'disponible': ['accessible', 'utilisable', 'libre', 'ouvert', 'joignable'],
+  'accessible': ['disponible', 'utilisable', 'ouvert', 'atteignable', 'joignable'],
+  'fonctionnel': ['opérationnel', 'actif', 'utilisable', 'performant'],
+  'opérationnel': ['fonctionnel', 'actif', 'utilisable', 'prêt'],
+  'valide': ['valable', 'légitime', 'conforme', 'recevable', 'reconnu'],
+  'valable': ['valide', 'légitime', 'conforme', 'recevable', 'acceptable'],
+  'expiré': ['périmé', 'échu', 'dépassé', 'obsolète', 'caduc'],
+  'obsolète': ['dépassé', 'périmé', 'ancien', 'désuet', 'caduc'],
+  'conforme': ['valide', 'valable', 'régulier', 'correct'],
+  'officiel': ['certifié', 'authentique', 'homologué', 'attesté', 'reconnu', 'validé'],
+  'authentique': ['véritable', 'officiel', 'certifié', 'attesté', 'original', 'légitime'],
+  'certifié': ['authentique', 'officiel', 'homologué', 'attesté', 'reconnu', 'validé'],
+  'homologué': ['certifié', 'validé', 'approuvé', 'officiel', 'attesté', 'reconnu'],
+  'approuvé': ['validé', 'entériné', 'homologué', 'accepté', 'agréé', 'ratifié'],
+  'légitime': ['valable', 'fondé', 'reconnu', 'valide', 'justifié'],
+  'moderne': ['récent', 'actuel', 'contemporain', 'nouveau', 'innovant'],
+  'récent': ['nouveau', 'moderne', 'actuel', 'contemporain', 'neuf'],
+  'nouveau': ['récent', 'neuf', 'moderne', 'inédit'],
+  'actuel': ['récent', 'moderne', 'contemporain', 'présent'],
+  'actif': ['ouvert', 'fonctionnel', 'valide', 'opérationnel', 'en cours', 'utilisable'],
+  'inactif': ['fermé', 'suspendu', 'invalide', 'bloqué', 'désactivé', 'inutilisable'],
+  'numérique': ['digital', 'informatique', 'électronique', 'en ligne', 'dématérialisé'],
+  'digital': ['numérique', 'électronique', 'informatique', 'dématérialisé'],
+  'informatique': ['numérique', 'digital', 'électronique'],
+  'électronique': ['numérique', 'digital', 'informatique', 'dématérialisé'],
+  'associé': ['lié', 'rattaché', 'relatif', 'attaché', 'relié', 'connecté'],
+  'lié': ['associé', 'rattaché', 'attaché', 'relié', 'connecté', 'relatif'],
+  'rattaché': ['lié', 'associé', 'attaché', 'relié', 'connecté'],
+  'relatif': ['associé', 'lié', 'rattaché', 'attaché'],
+  'personnel': ['privé', 'individuel', 'particulier', 'propre'],
+  'privé': ['personnel', 'confidentiel', 'individuel', 'particulier'],
+  'individuel': ['personnel', 'particulier', 'propre', 'privé', 'singulier'],
+  'particulier': ['personnel', 'privé', 'individuel', 'propre', 'spécifique'],
+  'spécifique': ['particulier', 'précis', 'défini', 'propre', 'concret'],
+  'précis': ['exact', 'spécifique', 'défini', 'concret', 'clair'],
   'complet': ['entier', 'intégral', 'exhaustif', 'total', 'plein'],
-  'complète': ['entière', 'intégrale', 'exhaustive', 'totale', 'pleine'],
-  'complets': ['entiers', 'intégraux', 'exhaustifs', 'totaux', 'pleins'],
-  'complètes': ['entières', 'intégrales', 'exhaustives', 'totales', 'pleines'],
   'total': ['complet', 'entier', 'intégral', 'global', 'plein'],
-  'totale': ['complète', 'entière', 'intégrale', 'globale', 'pleine'],
-  'totaux': ['complets', 'entiers', 'intégraux', 'globaux', 'pleins'],
-  'totales': ['complètes', 'entières', 'intégrales', 'globales', 'pleines'],
   'entier': ['complet', 'total', 'intégral', 'plein'],
-  'entière': ['complète', 'totale', 'intégrale', 'pleine'],
-  'entiers': ['complets', 'totaux', 'intégraux', 'pleins'],
-  'entières': ['complètes', 'totales', 'intégrales', 'pleines'],
   'clair': ['évident', 'précis', 'compréhensible', 'limpide', 'net'],
-  'claire': ['évidente', 'précise', 'compréhensible', 'limpide', 'nette'],
-  'clairs': ['évidents', 'précis', 'compréhensibles', 'limpides', 'nets'],
-  'claires': ['évidentes', 'précises', 'compréhensibles', 'limpides', 'nettes'],
   'évident': ['clair', 'manifeste', 'apparent', 'flagrant', 'incontestable'],
-  'évidente': ['claire', 'manifeste', 'apparente', 'flagrante', 'incontestable'],
-  'évidents': ['clairs', 'manifestes', 'apparents', 'flagrants', 'incontestables'],
-  'évidentes': ['claires', 'manifestes', 'apparentes', 'flagrantes', 'incontestables'],
   'simple': ['basique', 'élémentaire', 'facile', 'aisé'],
-  'simples': ['basiques', 'élémentaires', 'faciles', 'aisés'],
   'facile': ['simple', 'aisé', 'accessible', 'commode', 'praticable'],
-  'faciles': ['simples', 'aisés', 'accessibles', 'commodes', 'praticables'],
   'rapide': ['prompt', 'immédiat', 'expéditif', 'accéléré', 'véloce'],
-  'rapides': ['prompts', 'immédiats', 'expéditifs', 'accélérés', 'véloces'],
-
-
-  // ═══════════════════════════════════════════════════════════════
-  // LOCUTIONS (nécessitent reformulateText adapté au multi-mots)
-  // ═══════════════════════════════════════════════════════════════
-
-  // --- But / finalité ---
-  'afin de': ['pour', 'en vue de', 'dans le but de', 'de façon à', 'de manière à', 'dans l\'objectif de'],
-  'afin que': ['pour que', 'de sorte que', 'de manière que', 'de façon que'],
-  'pour que': ['afin que', 'de sorte que', 'de manière que', 'de façon que'],
-  'en vue de': ['afin de', 'pour', 'dans le but de', 'dans l\'objectif de', 'de manière à'],
-  'dans le but de': ['afin de', 'en vue de', 'pour', 'dans l\'objectif de', 'de manière à'],
-  'de façon à': ['afin de', 'de manière à', 'pour', 'en vue de'],
-  'de manière à': ['afin de', 'de façon à', 'pour', 'en vue de'],
-
-  // --- Cause / conséquence ---
-  'en raison de': ['du fait de', 'suite à', 'compte tenu de', 'à cause de', 'en conséquence de'],
-  'du fait de': ['en raison de', 'suite à', 'compte tenu de', 'à cause de'],
-  'suite à': ['à la suite de', 'consécutivement à', 'après', 'en raison de', 'du fait de'],
-  'à la suite de': ['suite à', 'consécutivement à', 'après', 'en raison de'],
-  'compte tenu de': ['en raison de', 'du fait de', 'étant donné', 'eu égard à', 'vu'],
-  'grâce à': ['au moyen de', 'par le biais de', 'par l\'intermédiaire de', 'via', 'moyennant'],
-  'au moyen de': ['grâce à', 'par le biais de', 'via', 'par l\'intermédiaire de', 'moyennant'],
-  'par le biais de': ['au moyen de', 'via', 'par l\'intermédiaire de', 'grâce à', 'moyennant'],
-  'par conséquent': ['ainsi', 'dès lors', 'de ce fait', 'en conséquence', 'donc'],
-  'de ce fait': ['ainsi', 'par conséquent', 'dès lors', 'en conséquence'],
-  'dès lors': ['par conséquent', 'ainsi', 'de ce fait', 'en conséquence'],
-
-  // --- Éventualité ---
-  'en cas de': ['dans l\'éventualité de', 'lors de', 'advenant', 'si'],
-  'pour toute': ['concernant toute', 'en cas de', 'relativement à toute', 'quant à toute'],
-  'pour tout': ['concernant tout', 'relativement à tout', 'quant à tout', 'en cas de'],
-
-  // --- À propos de ---
-  'concernant': ['relatif à', 'au sujet de', 'à propos de', 'quant à', 'relativement à', 'touchant'],
-  'au sujet de': ['concernant', 'à propos de', 'quant à', 'relativement à'],
-  'à propos de': ['concernant', 'au sujet de', 'quant à', 'relativement à'],
-  'relativement à': ['concernant', 'quant à', 'à propos de', 'au sujet de'],
-
-  // --- Précision ---
-  'notamment': ['en particulier', 'spécialement', 'précisément', 'entre autres', 'surtout'],
-  'en particulier': ['notamment', 'spécifiquement', 'précisément', 'surtout', 'entre autres'],
-
-  // --- Opposition ---
-  'toutefois': ['cependant', 'néanmoins', 'pourtant', 'malgré tout'],
-  'cependant': ['toutefois', 'néanmoins', 'pourtant', 'malgré tout'],
-  'néanmoins': ['cependant', 'toutefois', 'pourtant', 'malgré tout'],
-  'pourtant': ['cependant', 'toutefois', 'néanmoins', 'malgré tout'],
-
-  // --- Ajout ---
-  'de plus': ['en outre', 'également', 'par ailleurs', 'aussi', 'de surcroît'],
-  'en outre': ['de plus', 'également', 'par ailleurs', 'aussi', 'de surcroît'],
-  'par ailleurs': ['de plus', 'en outre', 'également', 'aussi', 'd\'autre part'],
-
-
-  // ═══════════════════════════════════════════════════════════════
+  
   // ADVERBES
-  // ═══════════════════════════════════════════════════════════════
-
-  // --- Rapidité ---
   'rapidement': ['vite', 'promptement', 'sans tarder', 'au plus vite', 'sans délai', 'immédiatement'],
   'vite': ['rapidement', 'promptement', 'sans délai', 'sans tarder', 'au plus vite'],
   'immédiatement': ['aussitôt', 'sur-le-champ', 'sans délai', 'instantanément', 'tout de suite'],
@@ -942,8 +737,6 @@ const SYNONYMS = {
   'promptement': ['rapidement', 'vite', 'sans tarder', 'sans délai', 'diligemment'],
   'progressivement': ['graduellement', 'peu à peu', 'par étapes', 'petit à petit'],
   'graduellement': ['progressivement', 'peu à peu', 'par degrés', 'petit à petit'],
-
-  // --- Temporalité ---
   'actuellement': ['à présent', 'à ce jour', 'à l\'heure actuelle', 'aujourd\'hui', 'maintenant'],
   'maintenant': ['à présent', 'désormais', 'à l\'heure actuelle', 'actuellement', 'aujourd\'hui'],
   'désormais': ['dorénavant', 'dès à présent', 'à partir de maintenant', 'à l\'avenir'],
@@ -958,8 +751,6 @@ const SYNONYMS = {
   'souvent': ['fréquemment', 'régulièrement', 'habituellement', 'communément', 'ordinairement'],
   'parfois': ['quelquefois', 'occasionnellement', 'à l\'occasion', 'par moments', 'de temps à autre'],
   'rarement': ['peu souvent', 'exceptionnellement', 'occasionnellement', 'de temps à autre'],
-
-  // --- Intensité ---
   'très': ['particulièrement', 'extrêmement', 'fort', 'grandement', 'hautement'],
   'extrêmement': ['très', 'particulièrement', 'infiniment', 'excessivement', 'grandement'],
   'particulièrement': ['spécialement', 'notamment', 'précisément', 'singulièrement', 'surtout'],
@@ -971,8 +762,6 @@ const SYNONYMS = {
   'absolument': ['totalement', 'complètement', 'catégoriquement', 'formellement', 'entièrement'],
   'intégralement': ['complètement', 'totalement', 'entièrement', 'pleinement'],
   'pleinement': ['complètement', 'totalement', 'entièrement', 'intégralement'],
-
-  // --- Manière ---
   'clairement': ['nettement', 'distinctement', 'précisément', 'manifestement'],
   'précisément': ['exactement', 'spécifiquement', 'clairement', 'nettement'],
   'exactement': ['précisément', 'rigoureusement', 'strictement', 'parfaitement'],
@@ -982,37 +771,62 @@ const SYNONYMS = {
   'automatiquement': ['systématiquement', 'spontanément', 'mécaniquement'],
   'systématiquement': ['automatiquement', 'invariablement', 'régulièrement', 'méthodiquement'],
   'gratuitement': ['sans frais', 'à titre gracieux', 'librement'],
-
-  // --- Approximation ---
   'environ': ['approximativement', 'à peu près', 'aux alentours de', 'quelque', 'de l\'ordre de'],
   'approximativement': ['environ', 'à peu près', 'presque', 'aux alentours de'],
   'presque': ['quasiment', 'à peu près', 'pratiquement', 'quasi'],
-  'quasiment': ['presque', 'pratiquement', 'quasi', 'à peu près']
+  'quasiment': ['presque', 'pratiquement', 'quasi', 'à peu près'],
+  
+  // LOCUTIONS
+  'afin de': ['pour', 'en vue de', 'dans le but de', 'de façon à', 'de manière à', 'dans l\'objectif de'],
+  'afin que': ['pour que', 'de sorte que', 'de manière que', 'de façon que'],
+  'pour que': ['afin que', 'de sorte que', 'de manière que', 'de façon que'],
+  'en vue de': ['afin de', 'pour', 'dans le but de', 'dans l\'objectif de', 'de manière à'],
+  'dans le but de': ['afin de', 'en vue de', 'pour', 'dans l\'objectif de', 'de manière à'],
+  'de façon à': ['afin de', 'de manière à', 'pour', 'en vue de'],
+  'de manière à': ['afin de', 'de façon à', 'pour', 'en vue de'],
+  'en raison de': ['du fait de', 'suite à', 'compte tenu de', 'à cause de', 'en conséquence de'],
+  'du fait de': ['en raison de', 'suite à', 'compte tenu de', 'à cause de'],
+  'suite à': ['à la suite de', 'consécutivement à', 'après', 'en raison de', 'du fait de'],
+  'à la suite de': ['suite à', 'consécutivement à', 'après', 'en raison de'],
+  'compte tenu de': ['en raison de', 'du fait de', 'étant donné', 'eu égard à', 'vu'],
+  'grâce à': ['au moyen de', 'par le biais de', 'par l\'intermédiaire de', 'via', 'moyennant'],
+  'au moyen de': ['grâce à', 'par le biais de', 'via', 'par l\'intermédiaire de', 'moyennant'],
+  'par le biais de': ['au moyen de', 'via', 'par l\'intermédiaire de', 'grâce à', 'moyennant'],
+  'par conséquent': ['ainsi', 'dès lors', 'de ce fait', 'en conséquence', 'donc'],
+  'de ce fait': ['ainsi', 'par conséquent', 'dès lors', 'en conséquence'],
+  'dès lors': ['par conséquent', 'ainsi', 'de ce fait', 'en conséquence'],
+  'en cas de': ['dans l\'éventualité de', 'lors de', 'advenant', 'si'],
+  'concernant': ['relatif à', 'au sujet de', 'à propos de', 'quant à', 'relativement à', 'touchant'],
+  'au sujet de': ['concernant', 'à propos de', 'quant à', 'relativement à'],
+  'à propos de': ['concernant', 'au sujet de', 'quant à', 'relativement à'],
+  'relativement à': ['concernant', 'quant à', 'à propos de', 'au sujet de'],
+  'notamment': ['en particulier', 'spécialement', 'précisément', 'entre autres', 'surtout'],
+  'en particulier': ['notamment', 'spécifiquement', 'précisément', 'surtout', 'entre autres'],
+  'toutefois': ['cependant', 'néanmoins', 'pourtant', 'malgré tout'],
+  'cependant': ['toutefois', 'néanmoins', 'pourtant', 'malgré tout'],
+  'néanmoins': ['cependant', 'toutefois', 'pourtant', 'malgré tout'],
+  'pourtant': ['cependant', 'toutefois', 'néanmoins', 'malgré tout'],
+  'de plus': ['en outre', 'également', 'par ailleurs', 'aussi', 'de surcroît'],
+  'en outre': ['de plus', 'également', 'par ailleurs', 'aussi', 'de surcroît'],
+  'par ailleurs': ['de plus', 'en outre', 'également', 'aussi', 'd\'autre part']
 };
-// Fonction de reformulation avec synonymes (mono-mots + locutions)
+
 function reformulateText(text) {
   if (!text) return text;
 
-  // 1. Précalcul : sépare les clés multi-mots des mono-mots
-  //    Les multi-mots sont triés par longueur décroissante pour éviter
-  //    qu'une clé courte n'avale une clé plus longue (ex: "dans le" avant "dans le but de").
   const multiWordKeys = Object.keys(SYNONYMS)
     .filter(k => k.includes(' '))
     .sort((a, b) => b.length - a.length);
 
   let reformulated = text;
 
-  // 2. Remplacement des locutions multi-mots.
-  //    On utilise une regex insensible à la casse avec limites de mot,
-  //    et on garde la casse d'origine (minuscule/majuscule initiale).
   for (const key of multiWordKeys) {
     const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const regex = new RegExp(`\\b${escaped}\\b`, 'gi');
     reformulated = reformulated.replace(regex, (match) => {
-      if (Math.random() >= 0.5) return match; // pas de remplacement cette fois
+      if (Math.random() >= 0.5) return match;
       const synonyms = SYNONYMS[key];
       const chosen = synonyms[Math.floor(Math.random() * synonyms.length)];
-      // Respecte la casse initiale : si le mot d'origine commençait par une majuscule, on capitalise
       if (match[0] === match[0].toUpperCase() && match[0] !== match[0].toLowerCase()) {
         return chosen.charAt(0).toUpperCase() + chosen.slice(1);
       }
@@ -1020,14 +834,12 @@ function reformulateText(text) {
     });
   }
 
-  // 3. Traitement mot-par-mot (inchangé, sauf qu'il opère sur le texte déjà transformé)
   const sentences = reformulated.split(/([.!?]+\s*)/);
   const newSentences = sentences.map(sentence => {
     const words = sentence.split(/\s+/);
     const newWords = words.map(word => {
       const clean = word.replace(/[.,!?;:()"]/g, '');
       const punct = word.match(/[.,!?;:()"]/g) || [];
-
       if (clean in SYNONYMS && Math.random() < 0.5) {
         const synonyms = SYNONYMS[clean];
         const chosen = synonyms[Math.floor(Math.random() * synonyms.length)];
@@ -1042,7 +854,7 @@ function reformulateText(text) {
 }
 
 // ─────────────────────────────────────────────────────
-// TEMPLATES HTML (10 modèles différents)
+// TEMPLATES HTML (10 modèles différents complets)
 // ─────────────────────────────────────────────────────
 const TEMPLATES = [
   {
@@ -1063,7 +875,6 @@ const TEMPLATES = [
                         </tr>
                         <tr>
                             <td style="PADDING: 25px 30px 20px;">
-                                <p style="FONT-SIZE: 13px; FONT-FAMILY: Arial,Helvetica,sans-serif; COLOR: #666666; MARGIN: 0 0 12px; TEXT-TRANSFORM: uppercase; LETTER-SPACING: 1px;"></p>
                                 <h2 style="FONT-SIZE: 20px; FONT-FAMILY: Arial,Helvetica,sans-serif; COLOR: #1a1a2e; MARGIN: 0 0 12px; LINE-HEIGHT: 1.3;"></h2>
                                 <p style="FONT-SIZE: 15px; FONT-FAMILY: Arial,Helvetica,sans-serif; COLOR: #333333; MARGIN: 0 0 12px; LINE-HEIGHT: 1.6;">[TEXTE_INTRO]</p>
                                 <p style="FONT-SIZE: 15px; FONT-FAMILY: Arial,Helvetica,sans-serif; COLOR: #333333; MARGIN: 0 0 16px; LINE-HEIGHT: 1.6;">[TEXTE_CONTENU]</p>
@@ -1109,9 +920,6 @@ const TEMPLATES = [
                         </tr>
                         <tr>
                             <td style="PADDING: 25px 30px 20px;">
-                                <div style="TEXT-ALIGN: center; MARGIN: 0 0 16px;">
-                                    <span style="FONT-SIZE: 36px;"></span>
-                                </div>
                                 <h2 style="FONT-SIZE: 18px; FONT-FAMILY: Arial,Helvetica,sans-serif; COLOR: #2c3e50; MARGIN: 0 0 12px; TEXT-ALIGN: center; LINE-HEIGHT: 1.3;"></h2>
                                 <p style="FONT-SIZE: 14px; FONT-FAMILY: Arial,Helvetica,sans-serif; COLOR: #555555; MARGIN: 0 0 10px; TEXT-ALIGN: center; LINE-HEIGHT: 1.6;">[TEXTE_INTRO]</p>
                                 <p style="FONT-SIZE: 14px; FONT-FAMILY: Arial,Helvetica,sans-serif; COLOR: #555555; MARGIN: 0 0 12px; LINE-HEIGHT: 1.7;">[TEXTE_CONTENU]</p>
@@ -1119,7 +927,7 @@ const TEMPLATES = [
                                     <p style="FONT-SIZE: 13px; FONT-FAMILY: Arial,Helvetica,sans-serif; COLOR: #888888; MARGIN: 0; LETTER-SPACING: 0.5px;">⏰ [DATE_ACTION]</p>
                                 </div>
                                 <p style="TEXT-ALIGN: center; MARGIN: 0 0 16px;">
-                                    <a style="FONT-SIZE: 15px; TEXT-DECORATION: none; FONT-FAMILY: Arial,Helvetica,sans-serif; FONT-WEIGHT: 600; COLOR: #ffffff; PADDING: 12px 40px; DISPLAY: inline-block; BACKGROUND-COLOR: [BUTTON_COLOR]; border-radius: 4px; LETTER-SPACING: 0.5px;" href="[LIEN_CTA]">Se connecter →</a>
+                                    <a style="FONT-SIZE: 15px; TEXT-DECORATION: none; FONT-FAMILY: Arial,Helvetica,sans-serif; FONT-WEIGHT: 600; COLOR: #ffffff; PADDING: 12px 40px; DISPLAY: inline-block; BACKGROUND-COLOR: [BUTTON_COLOR]; border-radius: 4px;" href="[LIEN_CTA]">Se connecter →</a>
                                 </p>
                                 <p style="FONT-SIZE: 13px; FONT-FAMILY: Arial,Helvetica,sans-serif; COLOR: #999999; TEXT-ALIGN: center; MARGIN: 0; LINE-HEIGHT: 1.4;">[NOTE_SECURITE]</p>
                                 <p style="FONT-SIZE: 14px; FONT-FAMILY: Arial,Helvetica,sans-serif; COLOR: #555555; MARGIN: 16px 0 4px; LINE-HEIGHT: 1.5;">[TEXTE_CONCLUSION]<br><strong>[NOM_ENTREPRISE]</strong></p>
@@ -1547,15 +1355,11 @@ const TEMPLATES = [
 // FONCTION DE GÉNÉRATION D'EMAIL AVEC TEMPLATE
 // ─────────────────────────────────────────────────────
 function generateEmailFromTemplate(template, config, baseText, clientName, link, unsubLink, mentions) {
-  // 1. Reformulation du texte
   const reformulatedText = reformulateText(baseText);
-  
-  // 2. Préparer les variables
   const dateAction = new Date().toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' });
   const refDossier = 'REF-' + Date.now().toString(36).toUpperCase();
   const messageAction = 'Veuillez procéder à cette mise à jour dans les plus brefs délais.';
   
-  // 3. Remplacer toutes les balises
   let html = template.html
     .replace(/\[NOM_ENTREPRISE\]/g, config.companyName || 'DEVICO')
     .replace(/\[PRENOM_CLIENT\]/g, clientName || 'Client')
@@ -1583,17 +1387,14 @@ function generateEmailFromTemplate(template, config, baseText, clientName, link,
 }
 
 // ─────────────────────────────────────────────────────
-// OBFUSCATION — Version préservant la lisibilité et les liens
+// OBFUSCATION
 // ─────────────────────────────────────────────────────
-
-// Configuration des modes d'obfuscation
 const OBFUSCATION_MODES = {
   light: { homoglyph_rate: 0.08, invisible_rate: 0.005 },
   medium: { homoglyph_rate: 0.15, invisible_rate: 0.01 },
   aggressive: { homoglyph_rate: 0.25, invisible_rate: 0.02 }
 };
 
-// Homoglyphes visuels
 const HOMOGLYPHS = {
   'a': ['а'], 'c': ['с'], 'e': ['е'], 'o': ['о'], 'p': ['р'],
   'x': ['х'], 'y': ['у'], 's': ['ѕ'], 'h': ['һ'], 'k': ['κ'],
@@ -1638,9 +1439,7 @@ function shouldPreserveWord(word) {
 }
 
 function obfuscateWord(word, homoglyphRate, invisibleRate) {
-  if (shouldPreserveWord(word) || word.length <= 2) {
-    return word;
-  }
+  if (shouldPreserveWord(word) || word.length <= 2) return word;
   
   const result = [];
   let hasModification = false;
@@ -1868,22 +1667,19 @@ app.post('/api/auth/logout', (req, res) => {
 // CONFIGURATION ROUTES
 // ─────────────────────────────────────────────────────
 app.post('/api/config', requireAuth, (req, res) => {
-  const { companyName, logoUrl, primaryColor, ctaUrl, mentionsLegales } = req.body;
+  const { companyName, logoUrl, primaryColor, ctaUrl, mentionsLegales, useYodaSmtp } = req.body;
   
   if (companyName) userConfig.companyName = companyName;
   if (logoUrl) userConfig.logoUrl = logoUrl;
   if (ctaUrl) userConfig.ctaUrl = ctaUrl;
   if (mentionsLegales) userConfig.mentionsLegales = mentionsLegales;
-  if (primaryColor) {
-    if (/^#[0-9a-fA-F]{6}$/.test(primaryColor)) {
-      userConfig.primaryColor = primaryColor;
-      userConfig.buttonColor = primaryColor;
-    }
+  if (typeof useYodaSmtp === 'boolean') userConfig.useYodaSmtp = useYodaSmtp;
+  if (primaryColor && /^#[0-9a-fA-F]{6}$/.test(primaryColor)) {
+    userConfig.primaryColor = primaryColor;
+    userConfig.buttonColor = primaryColor;
   }
   
-  // Sauvegarder dans le fichier
   saveConfigToFile(userConfig);
-  
   res.json({ success: true, config: userConfig });
 });
 
@@ -1902,6 +1698,7 @@ app.get('/api/config/export', requireAuth, (req, res) => {
       primaryColor: userConfig.primaryColor,
       ctaUrl: userConfig.ctaUrl,
       mentionsLegales: userConfig.mentionsLegales,
+      useYodaSmtp: userConfig.useYodaSmtp,
       exportedAt: new Date().toISOString()
     };
     res.json({ success: true, config });
@@ -1921,14 +1718,13 @@ app.post('/api/config/import', requireAuth, (req, res) => {
     if (config.logoUrl) userConfig.logoUrl = config.logoUrl;
     if (config.ctaUrl) userConfig.ctaUrl = config.ctaUrl;
     if (config.mentionsLegales) userConfig.mentionsLegales = config.mentionsLegales;
+    if (typeof config.useYodaSmtp === 'boolean') userConfig.useYodaSmtp = config.useYodaSmtp;
     if (config.primaryColor && /^#[0-9a-fA-F]{6}$/.test(config.primaryColor)) {
       userConfig.primaryColor = config.primaryColor;
       userConfig.buttonColor = config.primaryColor;
     }
     
-    // Sauvegarder dans le fichier
     saveConfigToFile(userConfig);
-    
     res.json({ success: true, config: userConfig });
   } catch (err) {
     res.json({ success: false, error: err.message });
@@ -1983,9 +1779,9 @@ const API_PROVIDERS = {
     body: m => {
       const from = m.fromName ? `${m.fromName} <${m.fromEmail}>` : m.fromEmail;
       const p = { from, to: asArray(m.to), subject: m.subject };
-      if (m.cc && m.cc.length)   p.cc = m.cc;
+      if (m.cc && m.cc.length) p.cc = m.cc;
       if (m.bcc && m.bcc.length) p.bcc = m.bcc;
-      if (m.replyTo)             p.reply_to = m.replyTo;
+      if (m.replyTo) p.reply_to = m.replyTo;
       if (m.html) p.html = m.html; else p.text = m.text || '';
       if (m.attachments && m.attachments.length)
         p.attachments = m.attachments.map(a => ({ filename: a.filename, content: a.content }));
@@ -2000,9 +1796,9 @@ const API_PROVIDERS = {
     body: m => {
       const from = m.fromName ? `${m.fromName} <${m.fromEmail}>` : m.fromEmail;
       const p = { From: from, To: asArray(m.to).join(','), Subject: m.subject, MessageStream: 'outbound' };
-      if (m.cc && m.cc.length)   p.Cc = m.cc.join(',');
+      if (m.cc && m.cc.length) p.Cc = m.cc.join(',');
       if (m.bcc && m.bcc.length) p.Bcc = m.bcc.join(',');
-      if (m.replyTo)             p.ReplyTo = m.replyTo;
+      if (m.replyTo) p.ReplyTo = m.replyTo;
       if (m.html) p.HtmlBody = m.html; else p.TextBody = m.text || '';
       if (m.attachments && m.attachments.length)
         p.Attachments = m.attachments.map(a => ({ Name: a.filename, Content: a.content, ContentType: a.type || 'application/octet-stream' }));
@@ -2020,9 +1816,9 @@ const API_PROVIDERS = {
         to: asArray(m.to).map(e => ({ email: e })),
         subject: m.subject
       };
-      if (m.cc && m.cc.length)   p.cc = m.cc.map(e => ({ email: e }));
+      if (m.cc && m.cc.length) p.cc = m.cc.map(e => ({ email: e }));
       if (m.bcc && m.bcc.length) p.bcc = m.bcc.map(e => ({ email: e }));
-      if (m.replyTo)             p.replyTo = { email: m.replyTo };
+      if (m.replyTo) p.replyTo = { email: m.replyTo };
       if (m.html) p.htmlContent = m.html; else p.textContent = m.text || '';
       if (m.attachments && m.attachments.length)
         p.attachment = m.attachments.map(a => ({ name: a.filename, content: a.content }));
@@ -2040,9 +1836,9 @@ const API_PROVIDERS = {
         to: asArray(m.to).map(e => ({ email: e })),
         subject: m.subject
       };
-      if (m.cc && m.cc.length)   p.cc = m.cc.map(e => ({ email: e }));
+      if (m.cc && m.cc.length) p.cc = m.cc.map(e => ({ email: e }));
       if (m.bcc && m.bcc.length) p.bcc = m.bcc.map(e => ({ email: e }));
-      if (m.replyTo)             p.reply_to = { email: m.replyTo };
+      if (m.replyTo) p.reply_to = { email: m.replyTo };
       if (m.html) p.html = m.html; else p.text = m.text || '';
       if (m.attachments && m.attachments.length)
         p.attachments = m.attachments.map(a => ({ filename: a.filename, content: a.content, disposition: 'attachment' }));
@@ -2060,9 +1856,9 @@ const API_PROVIDERS = {
         to: asArray(m.to).map(e => ({ address: e })),
         subject: m.subject
       };
-      if (m.cc && m.cc.length)   p.cc = m.cc.map(e => ({ address: e }));
+      if (m.cc && m.cc.length) p.cc = m.cc.map(e => ({ address: e }));
       if (m.bcc && m.bcc.length) p.bcc = m.bcc.map(e => ({ address: e }));
-      if (m.replyTo)             p.reply_to = { address: m.replyTo };
+      if (m.replyTo) p.reply_to = { address: m.replyTo };
       if (m.html) p.html = m.html; else p.plain = m.text || '';
       if (m.attachments && m.attachments.length)
         p.attachments = m.attachments.map(a => ({ file_name: a.filename, content: a.content, content_type: a.type || 'application/octet-stream' }));
@@ -2077,9 +1873,9 @@ const API_PROVIDERS = {
     body: m => {
       const from = m.fromName ? `${m.fromName} <${m.fromEmail}>` : m.fromEmail;
       const p = { from, to: asArray(m.to), subject: m.subject };
-      if (m.cc && m.cc.length)   p.cc = m.cc;
+      if (m.cc && m.cc.length) p.cc = m.cc;
       if (m.bcc && m.bcc.length) p.bcc = m.bcc;
-      if (m.replyTo)             p.replyTo = m.replyTo;
+      if (m.replyTo) p.replyTo = m.replyTo;
       if (m.html) p.html = m.html; else p.text = m.text || '';
       if (m.attachments && m.attachments.length)
         p.attachments = m.attachments.map(a => ({ content: a.content, filename: a.filename, contentType: a.type || 'application/octet-stream' }));
@@ -2091,7 +1887,7 @@ const API_PROVIDERS = {
 
 async function sendViaApi(providerKey, m) {
   const P = API_PROVIDERS[providerKey] || API_PROVIDERS.resend;
-  if (!m.apiKey)   throw new Error('Clé API manquante');
+  if (!m.apiKey) throw new Error('Clé API manquante');
   if (!m.fromEmail) throw new Error('From Email manquant (domaine vérifié)');
 
   const res = await fetch(P.endpoint, {
@@ -2131,7 +1927,6 @@ function smtpAttachments(attachments) {
 // ─────────────────────────────────────────────────────
 // AIDE À LA DÉLIVRABILITÉ
 // ─────────────────────────────────────────────────────
-
 function emailDomain(addr) {
   const m = String(addr || '').match(/@([^>]+)/);
   return m ? m[1].replace(/[>\s].*$/, '').toLowerCase() : 'localhost';
@@ -2140,7 +1935,7 @@ function emailDomain(addr) {
 function makeMessageId(fromEmail) {
   const dom = emailDomain(fromEmail);
   const rnd = Math.random().toString(36).slice(2, 10);
-  const ts  = Date.now().toString(36);
+  const ts = Date.now().toString(36);
   return `<${ts}.${rnd}@${dom}>`;
 }
 
@@ -2161,7 +1956,6 @@ function htmlToText(html) {
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
     .replace(/\n{3,}/g, '\n\n')
-    .replace(/[ \t]+\n/g, '\n')
     .trim();
 }
 
@@ -2225,55 +2019,16 @@ function parseSmtpLine(line) {
 
 const AUTO_SMTP_ATTEMPTS = [
   { port: 587, secure: false, label: 'STARTTLS 587' },
-  { port: 465, secure: true,  label: 'SSL 465' },
-  { port: 25,  secure: false, label: 'STARTTLS 25' }
+  { port: 465, secure: true, label: 'SSL 465' },
+  { port: 25, secure: false, label: 'STARTTLS 25' }
 ];
-
-async function tryOne(entry, attempt) {
-  const t = nodemailer.createTransport({
-    host: entry.host,
-    port: attempt.port,
-    secure: attempt.secure,
-    auth: { user: entry.user, pass: entry.pass },
-    connectionTimeout: 8000,
-    greetingTimeout: 8000,
-    socketTimeout: 8000,
-    tls: { rejectUnauthorized: false }
-  });
-  try {
-    await t.verify();
-    t.close();
-    return { ok: true };
-  } catch (err) {
-    t.close();
-    return { ok: false, error: err.message, code: err.code };
-  }
-}
-
-async function verifySmtp(entry) {
-  const errors = [];
-  for (const att of AUTO_SMTP_ATTEMPTS) {
-    const r = await tryOne(entry, att);
-    if (r.ok) {
-      entry.port = att.port;
-      entry.secure = att.secure;
-      entry.detected = att.label;
-      return { ok: true, detected: att.label };
-    }
-    errors.push(`${att.label}: ${r.error}`);
-    if (/auth|login|credentials|535|invalid/i.test(r.error || '')) {
-      return { ok: false, error: `Auth refusée (${att.label}) — ${r.error}` };
-    }
-  }
-  return { ok: false, error: errors.join(' | ') };
-}
 
 app.post('/api/smtp-pool/upload', requireAuth, async (req, res) => {
   const text = (req.body && req.body.text) || '';
   const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
 
   const report = [];
-  const valid  = [];
+  const valid = [];
 
   for (const line of lines) {
     const parsed = parseSmtpLine(line);
@@ -2370,7 +2125,8 @@ app.post('/api/profiles/:id/test', requireAuth, async (req, res) => {
       await sendViaApi(profile.provider || 'resend', { apiKey: profile.resendKey, ...base });
     } else {
       const t = buildSmtpTransporter(profile.smtp);
-      await sendViaSmtp(t, base); t.close();
+      await sendViaSmtp(t, base);
+      t.close();
     }
     res.json({ success: true });
   } catch (err) {
@@ -2379,30 +2135,52 @@ app.post('/api/profiles/:id/test', requireAuth, async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────
-// TEST DE CONNEXION
+// TEST DE CONNEXION (avec support yodaSMTP)
 // ─────────────────────────────────────────────────────
 app.post('/api/test', requireAuth, async (req, res) => {
   try {
-    const { mode, provider, smtp, resendKey, fromEmail, fromName, replyTo, testEmail } = req.body;
+    const { mode, provider, smtp, resendKey, fromEmail, fromName, replyTo, testEmail, useYodaSmtp } = req.body;
+    
     if (!testEmail || !testEmail.includes('@')) {
       return res.json({ success: false, detail: 'Email de test invalide' });
     }
-
+    
+    let smtpConfig = smtp;
+    let finalFromEmail = fromEmail;
+    let finalFromName = fromName || 'YODA Test';
+    
+    if (useYodaSmtp && selectedYodaAccount) {
+      smtpConfig = {
+        host: selectedYodaAccount.host,
+        port: selectedYodaAccount.port,
+        secure: selectedYodaAccount.secure,
+        user: selectedYodaAccount.user,
+        pass: selectedYodaAccount.pass
+      };
+      finalFromEmail = selectedYodaAccount.user;
+    }
+    
     const base = {
-      fromEmail, fromName, replyTo, to: testEmail,
+      fromEmail: finalFromEmail,
+      fromName: finalFromName,
+      replyTo,
+      to: testEmail,
       subject: '🧪 Test YODA MAILER',
-      text: 'Test de connexion réussi — YODA MAILER V5. https://oputui.s3.us-east-1.amazonaws.com/index.html'
+      text: 'Test de connexion réussi — YODA MAILER V5.\n\n' +
+            (useYodaSmtp && selectedYodaAccount ? 
+             `yodaSMTP: ${selectedYodaAccount.id} (${selectedYodaAccount.domain})` :
+             'SMTP standard')
     };
-
+    
     if (mode === 'resend') {
       if (!resendKey) return res.json({ success: false, detail: 'Clé API manquante' });
-      if (!fromEmail) return res.json({ success: false, detail: 'From Email manquant (domaine vérifié)' });
+      if (!finalFromEmail) return res.json({ success: false, detail: 'From Email manquant' });
       await sendViaApi(provider || 'resend', { apiKey: resendKey, ...base });
     } else {
-      if (!smtp || !smtp.host || !smtp.port || !smtp.user || !smtp.pass) {
+      if (!smtpConfig || !smtpConfig.host || !smtpConfig.user || !smtpConfig.pass) {
         return res.json({ success: false, detail: 'Config SMTP incomplète' });
       }
-      const t = buildSmtpTransporter(smtp);
+      const t = buildSmtpTransporter(smtpConfig);
       await t.verify();
       await sendViaSmtp(t, base);
       t.close();
@@ -2414,7 +2192,7 @@ app.post('/api/test', requireAuth, async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────
-// QUEUE
+// QUEUE (avec support yodaSMTP)
 // ─────────────────────────────────────────────────────
 app.get('/api/queue/status', requireAuth, (req, res) => {
   const since = parseInt(req.query.since || 0);
@@ -2431,21 +2209,40 @@ app.post('/api/queue/start', requireAuth, async (req, res) => {
   if (queue.status === 'running') {
     return res.json({ success: false, error: 'Un envoi est déjà en cours' });
   }
+  
   const b = req.body;
+  
+  let smtpConfig = b.smtp;
+  let finalFromEmail = b.fromEmail;
+  let finalFromName = b.fromName;
+  let useYodaSmtp = b.useYodaSmtp === true || userConfig.useYodaSmtp === true;
+  
+  if (useYodaSmtp && selectedYodaAccount) {
+    smtpConfig = {
+      host: selectedYodaAccount.host,
+      port: selectedYodaAccount.port,
+      secure: selectedYodaAccount.secure,
+      user: selectedYodaAccount.user,
+      pass: selectedYodaAccount.pass
+    };
+    finalFromEmail = selectedYodaAccount.user;
+    finalFromName = b.fromName || 'YODA SMTP';
+  }
+  
   queue = {
     status: 'running',
     mode: b.mode,
-    smtp: b.smtp,
+    smtp: smtpConfig,
     resendKey: b.resendKey,
     provider: b.provider || 'resend',
-    fromEmail: b.fromEmail,
-    fromName: b.fromName,
+    fromEmail: finalFromEmail,
+    fromName: finalFromName,
     replyTo: b.replyTo || '',
     cc: Array.isArray(b.cc) ? b.cc : [],
     attachments: Array.isArray(b.attachments) ? b.attachments : [],
     mail: b.mail,
     recipients: (b.recipients || []).map(r => ({ ...r, status: 'pending' })),
-    delayMs: b.delayMs,
+    delayMs: b.delayMs || 100,
     bccMode: b.bccMode === true,
     bccSize: Math.min(50, Math.max(1, parseInt(b.bccSize) || BCC_CHUNK)),
     usePool: b.usePool === true && smtpPool.length > 0,
@@ -2461,18 +2258,19 @@ app.post('/api/queue/start', requireAuth, async (req, res) => {
     obfuscationSeed: b.obfuscationSeed || null,
     codePrefix: b.codePrefix || 'DD',
     useTemplates: b.useTemplates === true,
-    baseText: b.baseText || 'Nous avons détecté un problème avec les informations associées à votre compte. Afin de garantir un accès sécurisé et fluide à nos services d\'identification numérique, il est impératif de mettre à jour vos données personnelles dans les plus brefs délais.',
-    ctaUrl: b.ctaUrl || userConfig.ctaUrl || '#'
+    baseText: b.baseText || 'Nous avons détecté un problème avec les informations associées à votre compte.',
+    ctaUrl: b.ctaUrl || userConfig.ctaUrl || '#',
+    useYodaSmtp: useYodaSmtp,
+    yodaAccountId: useYodaSmtp && selectedYodaAccount ? selectedYodaAccount.id : null
   };
 
   const attInfo = queue.attachments.length ? ` + ${queue.attachments.length} PJ` : '';
   const bccInfo = queue.bccMode ? ` / BCC lots de ${queue.bccSize}` : '';
-  const poolInfo = queue.usePool ? ` / pool ${queue.poolSnapshot.length} SMTP ${queue.poolMode==='parallel'?'parallèle':'séquentiel'}` : '';
-  const obfInfo = queue.obfuscate ? ` / obfuscation corps` : '';
-  const obfSubjectInfo = queue.obfuscateSubject ? ` / obfuscation sujet` : '';
-  const codeInfo = queue.addUniqueCode ? ` / code unique` : '';
-  const templateInfo = queue.useTemplates ? ` / templates dynamiques` : '';
-  addQueueLog(`⚡ Envoi démarré — ${queue.total} destinataire(s) [${queue.mode}${bccInfo}${poolInfo}${obfInfo}${obfSubjectInfo}${codeInfo}${templateInfo}]${attInfo}`, 'success');
+  const poolInfo = queue.usePool ? ` / pool ${queue.poolSnapshot.length} SMTP` : '';
+  const obfInfo = queue.obfuscate ? ` / obfuscation` : '';
+  const templateInfo = queue.useTemplates ? ` / templates` : '';
+  const yodaInfo = queue.useYodaSmtp ? ` / yodaSMTP ${queue.yodaAccountId}` : '';
+  addQueueLog(`⚡ Envoi démarré — ${queue.total} destinataire(s) [${queue.mode}${bccInfo}${poolInfo}${obfInfo}${templateInfo}${yodaInfo}]${attInfo}`, 'success');
   res.json({ success: true });
 
   processQueue().catch(err => {
@@ -2484,14 +2282,11 @@ app.post('/api/queue/start', requireAuth, async (req, res) => {
 // ─────────────────────────────────────────────────────
 // FONCTIONS D'OBFUSCATION POUR LA QUEUE
 // ─────────────────────────────────────────────────────
-
 function applyObfuscation(content, mode, seed = null) {
   if (!content || !content.trim()) return content;
-  
   if (/<[a-zA-Z][\s\S]*?>/.test(content)) {
     return obfuscateHtmlContent(content, mode, seed);
   }
-  
   return obfuscateText(content, mode);
 }
 
@@ -2507,7 +2302,6 @@ function generateObfuscatedSubject(baseSubject, name, email, obfuscateMode, seed
     const emailSeed = seed !== null 
       ? seed + email.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0) + 999
       : Math.floor(Math.random() * 1000000) + 999;
-    
     return applyObfuscation(personalized, obfuscateMode || 'medium', emailSeed);
   }
   
@@ -2521,7 +2315,6 @@ function generateObfuscatedMessage(baseBody, name, email, obfuscateMode, seed = 
     const emailSeed = seed !== null 
       ? seed + email.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0)
       : Math.floor(Math.random() * 1000000);
-    
     return applyObfuscation(personalized, obfuscateMode || 'medium', emailSeed);
   }
   
@@ -2552,7 +2345,7 @@ async function processQueue() {
 
   if (queue.usePool && !isApi) {
     if (queue.poolMode === 'parallel') await processPoolParallel();
-    else                                 await processPoolSequential();
+    else await processPoolSequential();
     queue.status = 'done';
     addQueueLog(`✅ Envoi terminé — ${queue.sent} réussi(s), ${queue.failed} échoué(s)`, 'success');
     return;
@@ -2562,7 +2355,7 @@ async function processQueue() {
   if (!isApi) smtpTransporter = buildSmtpTransporter(queue.smtp, true);
 
   if (queue.bccMode) await processBccMode(isApi, smtpTransporter);
-  else               await processIndividual(isApi, smtpTransporter);
+  else await processIndividual(isApi, smtpTransporter);
 
   if (smtpTransporter) smtpTransporter.close();
   queue.status = 'done';
@@ -2578,72 +2371,44 @@ async function sendOneWithPoolAccount(acc, rec) {
   
   let body = queue.mail.body || '';
   if (queue.obfuscate) {
-    body = generateObfuscatedMessage(
-      body,
-      name,
-      rec.email,
-      queue.obfuscationMode,
-      queue.obfuscationSeed
-    );
+    body = generateObfuscatedMessage(body, name, rec.email, queue.obfuscationMode, queue.obfuscationSeed);
   } else {
     body = body.replace(/{{name}}/g, name);
   }
   
   let subject = queue.mail.subject || '';
   if (queue.obfuscateSubject || queue.addUniqueCode) {
-    subject = generateObfuscatedSubject(
-      subject,
-      name,
-      rec.email,
-      queue.obfuscationMode,
-      queue.obfuscationSeed,
-      queue.addUniqueCode,
-      queue.codePrefix
-    );
+    subject = generateObfuscatedSubject(subject, name, rec.email, queue.obfuscationMode, queue.obfuscationSeed, queue.addUniqueCode, queue.codePrefix);
   } else {
     subject = subject.replace(/{{name}}/g, name);
   }
   
-  // Si les templates sont activés, générer un email avec template
   let htmlBody = body;
   let finalSubject = subject;
   let useTemplate = queue.useTemplates && !queue.bccMode;
   
   if (useTemplate && TEMPLATES.length > 0) {
-    // Choisir un template aléatoire
     const template = TEMPLATES[Math.floor(Math.random() * TEMPLATES.length)];
     const link = queue.ctaUrl || userConfig.ctaUrl || '#';
     const unsubLink = '#';
     const mentions = userConfig.mentionsLegales || 'Mentions légales de l\'entreprise';
     
-    // Générer l'email avec le template
     const emailData = generateEmailFromTemplate(
-      template,
-      userConfig,
-      queue.baseText || body,
-      name || rec.email.split('@')[0],
-      link,
-      unsubLink,
-      mentions
+      template, userConfig, queue.baseText || body,
+      name || rec.email.split('@')[0], link, unsubLink, mentions
     );
     
     htmlBody = emailData.html;
-    // Si le sujet n'est pas personnalisé, utiliser le sujet du template
     if (!queue.mail.subject || queue.mail.subject === '') {
       finalSubject = emailData.subject;
     }
   } else {
-    // Utiliser le corps HTML standard
     const isHtml = queue.mail.html;
-    if (isHtml) {
-      htmlBody = body;
-    } else {
-      htmlBody = body.replace(/\n/g, '<br>');
-    }
+    htmlBody = isHtml ? body : body.replace(/\n/g, '<br>');
   }
   
   const fromEmail = acc.user;
-  const fromName  = queue.fromName || '';
+  const fromName = queue.fromName || '';
   
   const mailOpts = {
     from: fromName ? `"${fromName}" <${fromEmail}>` : fromEmail,
@@ -2903,59 +2668,33 @@ async function processIndividual(isApi, smtpTransporter) {
       
       let body = queue.mail.body || '';
       let subject = queue.mail.subject || '';
-      let htmlBody = body;
-      let finalSubject = subject;
       
-      // Appliquer l'obfuscation si activée
       if (queue.obfuscate) {
-        body = generateObfuscatedMessage(
-          body,
-          name,
-          rec.email,
-          queue.obfuscationMode,
-          queue.obfuscationSeed
-        );
+        body = generateObfuscatedMessage(body, name, rec.email, queue.obfuscationMode, queue.obfuscationSeed);
       } else {
         body = body.replace(/{{name}}/g, name);
       }
       
-      // Appliquer l'obfuscation du sujet si activée
       if (queue.obfuscateSubject || queue.addUniqueCode) {
-        subject = generateObfuscatedSubject(
-          subject,
-          name,
-          rec.email,
-          queue.obfuscationMode,
-          queue.obfuscationSeed,
-          queue.addUniqueCode,
-          queue.codePrefix
-        );
+        subject = generateObfuscatedSubject(subject, name, rec.email, queue.obfuscationMode, queue.obfuscationSeed, queue.addUniqueCode, queue.codePrefix);
       } else {
         subject = subject.replace(/{{name}}/g, name);
       }
       
-      // Si les templates sont activés et pas en mode BCC
       let useTemplate = queue.useTemplates && !queue.bccMode;
+      let htmlBody = body;
+      let finalSubject = subject;
       
       if (useTemplate && TEMPLATES.length > 0) {
-        // Choisir un template aléatoire
         const template = TEMPLATES[Math.floor(Math.random() * TEMPLATES.length)];
         const link = queue.ctaUrl || userConfig.ctaUrl || '#';
         const unsubLink = '#';
         const mentions = userConfig.mentionsLegales || 'Mentions légales de l\'entreprise';
+        const baseText = queue.baseText || body;
         
-        // Utiliser le texte de base du template ou le corps du message
-        const baseText = queue.baseText || body || 'Nous avons détecté un problème avec les informations associées à votre compte. Afin de garantir un accès sécurisé et fluide à nos services d\'identification numérique, il est impératif de mettre à jour vos données personnelles dans les plus brefs délais.';
-        
-        // Générer l'email avec le template
         const emailData = generateEmailFromTemplate(
-          template,
-          userConfig,
-          baseText,
-          name || rec.email.split('@')[0],
-          link,
-          unsubLink,
-          mentions
+          template, userConfig, baseText,
+          name || rec.email.split('@')[0], link, unsubLink, mentions
         );
         
         htmlBody = emailData.html;
@@ -2963,13 +2702,8 @@ async function processIndividual(isApi, smtpTransporter) {
           finalSubject = emailData.subject;
         }
       } else {
-        // Utiliser le corps HTML standard
         const isHtml = queue.mail.html;
-        if (isHtml) {
-          htmlBody = body;
-        } else {
-          htmlBody = body.replace(/\n/g, '<br>');
-        }
+        htmlBody = isHtml ? body : body.replace(/\n/g, '<br>');
       }
       
       const opts = {
@@ -2982,14 +2716,13 @@ async function processIndividual(isApi, smtpTransporter) {
       
       await rateGate();
       if (isApi) await sendViaApi(queue.provider, { apiKey: queue.resendKey, ...opts });
-      else       await sendViaSmtp(smtpTransporter, opts);
+      else await sendViaSmtp(smtpTransporter, opts);
 
       const obfInfo = queue.obfuscate ? ' corps obfusqué' : '';
-      const obfSubjectInfo = queue.obfuscateSubject ? ' sujet obfusqué' : '';
-      const codeInfo = queue.addUniqueCode ? ' code unique' : '';
       const templateInfo = useTemplate ? ' template' : '';
+      const yodaInfo = queue.useYodaSmtp ? ` yoda${queue.yodaAccountId}` : '';
       markSent(rec, { provider: isApi ? queue.provider : undefined, account: !isApi ? queue.smtp.user : undefined });
-      addQueueLog(`✓ ${rec.email}${obfInfo}${obfSubjectInfo}${codeInfo}${templateInfo}`, 'success');
+      addQueueLog(`✓ ${rec.email}${obfInfo}${templateInfo}${yodaInfo}`, 'success');
     } catch (err) {
       markFailed(rec, err.message, { provider: isApi ? queue.provider : undefined, account: !isApi ? queue.smtp.user : undefined });
       addQueueLog(`✗ ${rec.email} — ${err.message.substring(0, 80)}`, 'error');
@@ -3024,10 +2757,10 @@ async function processBccMode(isApi, smtpTransporter) {
       };
       await rateGate();
       if (isApi) await sendViaApi(queue.provider, { apiKey: queue.resendKey, ...opts });
-      else       await sendViaSmtp(smtpTransporter, opts);
+      else await sendViaSmtp(smtpTransporter, opts);
 
       markSentBulk(chunk, { provider: isApi ? queue.provider : undefined, account: !isApi ? queue.smtp.user : undefined });
-      addQueueLog(`✓ Lot BCC ${lotNum}/${lotTotal} — ${chunk.length} destinataires en copie cachée`, 'success');
+      addQueueLog(`✓ Lot BCC ${lotNum}/${lotTotal} — ${chunk.length} destinataires`, 'success');
     } catch (err) {
       markFailedBulk(chunk, err.message, { provider: isApi ? queue.provider : undefined, account: !isApi ? queue.smtp.user : undefined });
       addQueueLog(`✗ Lot BCC ${lotNum}/${lotTotal} échoué — ${err.message.substring(0, 80)}`, 'error');
@@ -3057,6 +2790,7 @@ function markSent(rec, meta = {}) {
     subject: queue.mail && queue.mail.subject
   });
 }
+
 function markFailed(rec, error, meta = {}) {
   rec.status = 'error'; queue.failed++;
   pushHistory({
@@ -3066,6 +2800,7 @@ function markFailed(rec, error, meta = {}) {
     subject: queue.mail && queue.mail.subject
   });
 }
+
 function markSentBulk(recs, meta = {}) { recs.forEach(r => markSent(r, meta)); }
 function markFailedBulk(recs, error, meta = {}) { recs.forEach(r => markFailed(r, error, meta)); }
 
@@ -3073,14 +2808,17 @@ app.post('/api/queue/pause', requireAuth, (req, res) => {
   if (queue.status === 'running') { queue.status = 'paused'; addQueueLog('⏸ Envoi en pause', 'warn'); }
   res.json({ success: true });
 });
+
 app.post('/api/queue/resume', requireAuth, (req, res) => {
   if (queue.status === 'paused') { queue.status = 'running'; addQueueLog('▶ Envoi repris', 'info'); }
   res.json({ success: true });
 });
+
 app.post('/api/queue/stop', requireAuth, (req, res) => {
   queue.status = 'stopped'; addQueueLog('⏹ Envoi stoppé', 'warn');
   res.json({ success: true });
 });
+
 app.post('/api/queue/reset', requireAuth, (req, res) => {
   queue = emptyQueue();
   res.json({ success: true });
@@ -3108,6 +2846,16 @@ app.post('/api/obfuscation/preview', requireAuth, (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────
+// Charger les comptes yodaSMTP au démarrage
+// ─────────────────────────────────────────────────────
+yodaAccounts = parseYodaAccounts();
+if (yodaAccounts.length > 0) {
+  console.log(`🟢 ${yodaAccounts.length} comptes yodaSMTP chargés depuis .env`);
+} else {
+  console.log('ℹ️ Aucun compte yodaSMTP trouvé dans .env');
+}
+
+// ─────────────────────────────────────────────────────
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
 const PORT = process.env.PORT || 3000;
@@ -3117,4 +2865,6 @@ app.listen(PORT, () => {
   console.log(`🔗 CTA URL: ${userConfig.ctaUrl || 'Non définie'}`);
   console.log(`📋 ${TEMPLATES.length} templates disponibles`);
   console.log(`💾 Fichier de configuration: ${CONFIG_FILE}`);
+  console.log(`🟢 yodaSMTP: ${yodaAccounts.length} comptes chargés depuis .env`);
+  console.log(`🎯 yodaSMTP activé: ${userConfig.useYodaSmtp ? 'OUI' : 'NON'}`);
 });
