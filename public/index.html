@@ -163,27 +163,6 @@
   .config-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
   .config-grid .field{margin-bottom:0}
   @media(max-width:500px){.config-grid{grid-template-columns:1fr}}
-  
-  /* YODA SMTP styles */
-  .yoda-accounts-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px;margin-top:10px}
-  .yoda-account-card{background:rgba(255,255,255,.03);border-radius:6px;padding:12px;border:1px solid var(--bord);transition:all .2s}
-  .yoda-account-card:hover{border-color:rgba(0,240,255,.2)}
-  .yoda-account-card.selected{border-color:var(--cyan);background:rgba(0,240,255,.06)}
-  .yoda-account-card .id{color:var(--cyan);font-weight:700;font-family:'Courier New',monospace}
-  .yoda-account-card .domain{color:var(--dim);font-size:11px;font-family:'Courier New',monospace}
-  .yoda-account-card .status{font-size:11px;font-family:'Courier New',monospace;margin-top:4px}
-  .yoda-account-card .status.working{color:var(--green)}
-  .yoda-account-card .status.failed{color:var(--red)}
-  .yoda-account-card .status.untested{color:var(--muted)}
-  .yoda-account-card .badge-selected{display:inline-block;background:var(--cyan);color:#000;padding:1px 8px;border-radius:10px;font-size:9px;font-weight:700;margin-top:4px}
-  .yoda-select-area{display:flex;gap:8px;margin-top:12px}
-  .yoda-select-area input{flex:1}
-  .yoda-status{margin-top:8px;padding:8px 12px;border-radius:4px;font-family:'Courier New',monospace;font-size:11px}
-  .yoda-status.success{background:rgba(57,255,158,.08);border:1px solid rgba(57,255,158,.2);color:var(--green)}
-  .yoda-status.error{background:rgba(255,46,99,.08);border:1px solid rgba(255,46,99,.2);color:var(--red)}
-  .yoda-status.info{background:rgba(0,240,255,.08);border:1px solid rgba(0,240,255,.2);color:var(--cyan)}
-  .yoda-status .spinner{display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,.1);border-top-color:var(--cyan);border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle;margin-right:8px}
-  @keyframes spin{to{transform:rotate(360deg)}}
 </style>
 </head>
 <body>
@@ -233,8 +212,6 @@
       background:rgba(255,215,0,.08);border:1px solid rgba(255,215,0,.3);padding:3px 8px;border-radius:4px">🔑 CODE</span>
     <span id="template-badge" style="display:none;font-family:'Courier New',monospace;font-size:10px;color:var(--green);
       background:rgba(57,255,158,.08);border:1px solid rgba(57,255,158,.3);padding:3px 8px;border-radius:4px">📧 TEMPLATES</span>
-    <span id="yoda-badge" style="display:none;font-family:'Courier New',monospace;font-size:10px;color:var(--cyan);
-      background:rgba(0,240,255,.08);border:1px solid rgba(0,240,255,.3);padding:3px 8px;border-radius:4px">🟢 YODA</span>
     <span style="display:inline-flex;align-items:center;gap:5px;font-size:11px;font-family:'Courier New',monospace;text-transform:uppercase;letter-spacing:.1em">
       <span id="badge-dot" style="width:6px;height:6px;border-radius:50%;background:var(--muted);flex-shrink:0"></span>
       <span id="badge-text" style="color:var(--muted)">IDLE</span>
@@ -596,46 +573,11 @@
           </div>
         </div>
 
-        <!-- ══════════════ YODA SMTP SECTION ══════════════ -->
-        <div class="box" style="margin-bottom:14px;border-color:rgba(0,240,255,.3)">
-          <div style="font-size:10px;font-family:'Courier New',monospace;color:var(--cyan);text-transform:uppercase;letter-spacing:.1em;margin-bottom:10px">🟢 yodaSMTP — Comptes depuis .env</div>
-          
-          <div class="switch-row">
-            <label class="switch-label">🟢 Activer yodaSMTP (comptes du fichier .env)</label>
-            <label class="switch cyan">
-              <input type="checkbox" id="yoda-toggle" onchange="toggleYoda(this.checked)">
-              <span class="slider"></span>
-              <span class="status-badge">OFF</span>
-            </label>
-          </div>
-          
-          <div id="yoda-section" style="display:none;margin-top:12px">
-            <div class="row" style="margin-bottom:10px;flex-wrap:wrap">
-              <input id="yoda-test-email" type="email" placeholder="Email de test" style="flex:1;min-width:150px"/>
-              <button class="btn btn-cyan" onclick="testYodaAccounts()">🧪 Tester</button>
-              <button class="btn btn-muted" onclick="loadYodaAccounts()">↻ Rafraîchir</button>
-            </div>
-            
-            <div id="yoda-status" style="display:none" class="yoda-status"></div>
-            
-            <div id="yoda-accounts-container" class="yoda-accounts-grid"></div>
-            
-            <div class="yoda-select-area">
-              <input id="yoda-select-id" type="text" placeholder="ID à 6 chiffres" maxlength="6"/>
-              <button class="btn btn-green" onclick="selectYodaAccount()">✅ Sélectionner</button>
-              <button class="btn btn-red" onclick="resetYodaSelection()">↺ Reset</button>
-            </div>
-            
-            <div id="yoda-selected-info" style="margin-top:8px;font-family:'Courier New',monospace;font-size:11px;color:var(--dim)"></div>
-          </div>
-        </div>
-
         <div class="info-box">💡 Utilise <span style="color:var(--cyan)">{{name}}</span> — remplacé par le nom de chaque destinataire (mode individuel uniquement).<br/>
         <span style="color:var(--purple)">🛡️ L'obfuscation remplace certains caractères par des homoglyphes et ajoute des caractères invisibles pour éviter le spam.</span><br/>
         <span style="color:var(--pink)">🏷️ L'obfuscation du sujet rend chaque sujet unique pour améliorer la délivrabilité.</span><br/>
         <span style="color:var(--gold)">🔑 Le code unique [DD#XXXXXXXX-YYYY] est généré aléatoirement pour chaque destinataire.</span><br/>
-        <span style="color:var(--green)">📧 Les templates alternent automatiquement à chaque envoi (10 styles différents).</span><br/>
-        <span style="color:var(--cyan)">🟢 yodaSMTP utilise les comptes du fichier .env — testez et sélectionnez un compte par son ID.</span></div>
+        <span style="color:var(--green)">📧 Les templates alternent automatiquement à chaque envoi (10 styles différents).</span></div>
       </div>
 
       <!-- POOL SMTP -->
@@ -768,8 +710,7 @@
           <span style="color:var(--cyan)">5</span> — Rédige ton message + PJ<br/>
           <span style="color:var(--cyan)">6</span> — Active l'obfuscation (optionnel)<br/>
           <span style="color:var(--gold)">7</span> — Active les templates (optionnel)<br/>
-          <span style="color:var(--cyan)">8</span> — Active yodaSMTP (optionnel)<br/>
-          <span style="color:var(--cyan)">9</span> — Lance en arrière-plan<br/><br/>
+          <span style="color:var(--cyan)">8</span> — Lance en arrière-plan<br/><br/>
           <span style="color:var(--green);font-size:11px">⚡ L'envoi continue même si tu fermes l'app</span>
         </div>
       </div>
@@ -836,9 +777,7 @@ const state = {
   obfuscate:false, obfuscateSubject:false, addUniqueCode:false, codePrefix:"DD",
   obfuscationMode:"medium", obfuscationSeed:null,
   // Templates
-  useTemplates:false, templates:[],
-  // YodaSMTP
-  useYodaSmtp:false, yodaAccounts:[], yodaSelected:null
+  useTemplates:false, templates:[]
 };
 
 const PRESETS = {
@@ -1059,155 +998,6 @@ document.getElementById("config-color-text")?.addEventListener("input", function
   document.getElementById("config-color").value = this.value;
 });
 
-// ══════════════ YODA SMTP ══════════════
-function toggleYoda(enabled){
-  state.useYodaSmtp = enabled;
-  const section = document.getElementById("yoda-section");
-  const badge = document.getElementById("yoda-badge");
-  const toggle = document.getElementById("yoda-toggle");
-  const statusBadge = toggle.closest(".switch").querySelector(".status-badge");
-  
-  if(enabled){
-    section.style.display = "block";
-    badge.style.display = "inline-flex";
-    if(statusBadge) statusBadge.textContent = "ON";
-    addLog("🟢 yodaSMTP activé", "info");
-    loadYodaAccounts();
-  } else {
-    section.style.display = "none";
-    badge.style.display = "none";
-    if(statusBadge) statusBadge.textContent = "OFF";
-    state.yodaSelected = null;
-    document.getElementById("yoda-selected-info").textContent = "";
-    addLog("🟢 yodaSMTP désactivé", "info");
-  }
-  updateStartBtn();
-}
-
-async function loadYodaAccounts(){
-  try {
-    const r = await api("/api/yoda/accounts");
-    const d = await r.json();
-    if(d.success){
-      state.yodaAccounts = d.accounts || [];
-      renderYodaAccounts();
-      if(d.selected){
-        state.yodaSelected = d.selected;
-        document.getElementById("yoda-selected-info").innerHTML = 
-          `<span style="color:var(--green)">✅ Sélectionné: ID ${d.selected.id} (${d.selected.domain})</span>`;
-      } else {
-        document.getElementById("yoda-selected-info").textContent = "Aucun compte sélectionné";
-      }
-    }
-  } catch(e){
-    addLog("❌ Erreur chargement yodaSMTP: " + e.message, "error");
-  }
-}
-
-function renderYodaAccounts(){
-  const container = document.getElementById("yoda-accounts-container");
-  if(!state.yodaAccounts.length){
-    container.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:20px;color:var(--muted)">Aucun compte yodaSMTP trouvé dans .env</div>';
-    return;
-  }
-  container.innerHTML = state.yodaAccounts.map(acc => {
-    const isSelected = state.yodaSelected && state.yodaSelected.id === acc.id;
-    const statusClass = acc.working ? "working" : (acc.tested ? "failed" : "untested");
-    const statusText = acc.working ? "✅ Fonctionnel" : (acc.tested ? "❌ Échec" : "⏳ Non testé");
-    return `<div class="yoda-account-card ${isSelected ? 'selected' : ''}">
-      <div class="id">#${acc.id}</div>
-      <div class="domain">${acc.domain} · ${acc.host}:${acc.port}</div>
-      <div class="status ${statusClass}">${statusText}${acc.error ? ` <span style="color:var(--red);font-size:9px">${acc.error.substring(0,30)}</span>` : ''}</div>
-      ${isSelected ? '<div class="badge-selected">✓ SÉLECTIONNÉ</div>' : ''}
-      ${acc.working && !isSelected ? `<button class="btn btn-green" style="padding:2px 10px;font-size:9px;margin-top:4px" onclick="quickSelectYoda('${acc.id}')">Sélectionner</button>` : ''}
-    </div>`;
-  }).join('');
-}
-
-async function quickSelectYoda(id){
-  document.getElementById("yoda-select-id").value = id;
-  await selectYodaAccount();
-}
-
-async function testYodaAccounts(){
-  const email = document.getElementById("yoda-test-email").value.trim();
-  if(!email || !email.includes("@")){
-    addLog("⚠ Entrez un email valide pour tester","warn");
-    return;
-  }
-  
-  const statusEl = document.getElementById("yoda-status");
-  statusEl.style.display = "block";
-  statusEl.className = "yoda-status info";
-  statusEl.innerHTML = '<span class="spinner"></span> Test en cours...';
-  
-  try {
-    const r = await api("/api/yoda/test", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ testEmail: email })
-    });
-    const d = await r.json();
-    if(d.success){
-      statusEl.className = "yoda-status success";
-      statusEl.innerHTML = `✅ ${d.results.working} comptes fonctionnels sur ${d.results.tested} testés — Total: ${d.results.total} comptes dans .env`;
-      addLog(`🟢 yodaSMTP: ${d.results.working}/${d.results.tested} comptes fonctionnels`, "success");
-      await loadYodaAccounts();
-    } else {
-      statusEl.className = "yoda-status error";
-      statusEl.textContent = "❌ " + (d.error || "Erreur inconnue");
-      addLog("❌ Test yodaSMTP échoué: " + (d.error || "Erreur inconnue"), "error");
-    }
-  } catch(e){
-    statusEl.className = "yoda-status error";
-    statusEl.textContent = "❌ Erreur réseau: " + e.message;
-    addLog("❌ Erreur réseau: " + e.message, "error");
-  }
-}
-
-async function selectYodaAccount(){
-  const id = document.getElementById("yoda-select-id").value.trim();
-  if(!id){
-    addLog("⚠ Entrez un ID de compte","warn");
-    return;
-  }
-  try {
-    const r = await api("/api/yoda/select", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: id })
-    });
-    const d = await r.json();
-    if(d.success){
-      state.yodaSelected = d.selected;
-      document.getElementById("yoda-selected-info").innerHTML = 
-        `<span style="color:var(--green)">✅ Sélectionné: ID ${d.selected.id} (${d.selected.domain})</span>`;
-      addLog(`🟢 Compte yodaSMTP ${d.selected.id} sélectionné`, "success");
-      await loadYodaAccounts();
-    } else {
-      addLog("❌ " + (d.error || "Erreur"), "error");
-    }
-  } catch(e){
-    addLog("❌ Erreur: " + e.message, "error");
-  }
-}
-
-async function resetYodaSelection(){
-  try {
-    const r = await api("/api/yoda/reset", { method: "POST" });
-    const d = await r.json();
-    if(d.success){
-      state.yodaSelected = null;
-      document.getElementById("yoda-selected-info").textContent = "Aucun compte sélectionné";
-      document.getElementById("yoda-select-id").value = "";
-      addLog("🟢 Sélection yodaSMTP réinitialisée", "info");
-      await loadYodaAccounts();
-    }
-  } catch(e){
-    addLog("❌ Erreur: " + e.message, "error");
-  }
-}
-
 // ══════════════ PROFILS ══════════════
 async function loadProfiles(){
   try { const r=await api("/api/profiles"); const d=await r.json(); if(d.success){state.profiles=d.profiles;renderProfiles();} } catch(e){}
@@ -1382,7 +1172,6 @@ function switchTab(name){
   if(name==="compose")renderFromPreview();
   if(name==="sent")loadHistory();
   if(name==="templates")loadTemplates();
-  if(name==="profiles")loadProfiles();
 }
 
 // ══════════════ SMTP CONFIG ══════════════
@@ -1915,7 +1704,6 @@ function updateStartBtn(){
   if(state.obfuscateSubject) obf += " 🏷️";
   if(state.addUniqueCode) obf += " 🔑";
   if(state.useTemplates) obf += " 📧";
-  if(state.useYodaSmtp && state.yodaSelected) obf += " 🟢";
   btn.textContent=`▶ Lancer (${pending} mail${pending>1?"s":""})${obf}`; 
   btn.disabled=pending===0;
   if(state.bccMode)updateBccHint();
@@ -1936,30 +1724,28 @@ async function startSend(){
     if(n<1)n=1; if(n>50)n=50;
     state.bccSize=n;
   }
-  if(!state.validated && !state.usePool && !(state.useYodaSmtp && state.yodaSelected)){
-    addLog("⚠ Sélectionne un profil, configure une connexion, active le pool SMTP ou yodaSMTP","error");
-    switchTab("profiles");
-    return;
-  }
+  if(!state.validated && !state.usePool){addLog("⚠ Sélectionne un profil, configure une connexion ou active le pool SMTP","error");switchTab("profiles");return;}
   if(!state.mail.subject && !state.useTemplates){addLog("⚠ Le sujet est obligatoire (ou active les templates)","error");switchTab("compose");return;}
   const targets=state.recipients.filter(r=>r.active&&r.status!=="sent");
   if(!targets.length){addLog("Aucun destinataire actif","warn");return;}
   clearLogs(); state.logIndex=0;
   const cfg=getActiveConfig();
-  // Si yodaSMTP est activé, on utilise son compte
-  if(state.useYodaSmtp && state.yodaSelected){
-    cfg.fromEmail = state.yodaSelected.user || state.yodaSelected.email;
-    addLog(`🟢 Utilisation du compte yodaSMTP #${state.yodaSelected.id} (${state.yodaSelected.domain})`, "info");
-  }
   if(state.bccMode){
     const lots=Math.ceil(targets.length/state.bccSize);
     addLog(`BCC : ${targets.length} adresses → ${lots} lot(s) de ${state.bccSize} max`,"info");
   }
-  if(state.obfuscate && state.bccMode) addLog("⚠ L'obfuscation est désactivée en mode BCC","warn");
-  if(state.obfuscateSubject && state.bccMode) addLog("⚠ L'obfuscation du sujet est désactivée en mode BCC","warn");
-  if(state.addUniqueCode && state.bccMode) addLog("⚠ Le code unique est désactivé en mode BCC","warn");
-  if(state.useTemplates && state.bccMode) addLog("⚠ Les templates sont désactivés en mode BCC","warn");
-  
+  if(state.obfuscate && state.bccMode) {
+    addLog("⚠ L'obfuscation est désactivée en mode BCC (un seul message par lot)","warn");
+  }
+  if(state.obfuscateSubject && state.bccMode) {
+    addLog("⚠ L'obfuscation du sujet est désactivée en mode BCC","warn");
+  }
+  if(state.addUniqueCode && state.bccMode) {
+    addLog("⚠ Le code unique est désactivé en mode BCC","warn");
+  }
+  if(state.useTemplates && state.bccMode) {
+    addLog("⚠ Les templates sont désactivés en mode BCC","warn");
+  }
   try{
     const r=await api("/api/queue/start",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
       mode:cfg.mode,provider:cfg.provider,smtp:cfg.smtp,resendKey:cfg.resendKey,fromEmail:cfg.fromEmail,fromName:cfg.fromName,replyTo:cfg.replyTo,
@@ -1973,8 +1759,7 @@ async function startSend(){
       obfuscationSeed:state.obfuscationSeed,
       useTemplates:state.useTemplates && !state.bccMode,
       baseText:state.mail.body,
-      ctaUrl:document.getElementById("config-cta").value.trim() || "#",
-      useYodaSmtp:state.useYodaSmtp && !!state.yodaSelected
+      ctaUrl:document.getElementById("config-cta").value.trim() || "#"
     })});
     const d=await r.json();
     if(!d.success){addLog(`Erreur: ${d.error}`,"error");return;}
@@ -1982,8 +1767,7 @@ async function startSend(){
     const obfSubjectInfo = (state.obfuscateSubject && !state.bccMode) ? " sujet obfusqué" : "";
     const codeInfo = (state.addUniqueCode && !state.bccMode) ? " code unique" : "";
     const templateInfo = (state.useTemplates && !state.bccMode) ? " templates" : "";
-    const yodaInfo = (state.useYodaSmtp && state.yodaSelected) ? ` yoda#${state.yodaSelected.id}` : "";
-    addLog(`⚡ Envoi démarré — ${targets.length} destinataires${obfInfo}${obfSubjectInfo}${codeInfo}${templateInfo}${yodaInfo}`,"success");
+    addLog(`⚡ Envoi démarré — ${targets.length} destinataires${obfInfo}${obfSubjectInfo}${codeInfo}${templateInfo}`,"success");
     addLog(`Tu peux fermer l'app, l'envoi continue sur le serveur`,"info");
     document.getElementById("bg-badge").style.display="inline-flex"; setBadge("running","RUNNING","var(--cyan)");
     document.getElementById("btn-start").style.display="none";
@@ -1999,8 +1783,7 @@ async function startSend(){
     const obfSubjectCmd = (state.obfuscateSubject && !state.bccMode) ? ` --obf-subject` : "";
     const codeCmd = (state.addUniqueCode && !state.bccMode) ? ` --code ${state.codePrefix}` : "";
     const templateCmd = (state.useTemplates && !state.bccMode) ? ` --templates` : "";
-    const yodaCmd = (state.useYodaSmtp && state.yodaSelected) ? ` --yoda ${state.yodaSelected.id}` : "";
-    document.getElementById("console-cmd").textContent = `$ yoda --mode ${cfg.mode}${state.bccMode?" --bcc":""}${obfCmd}${obfSubjectCmd}${codeCmd}${templateCmd}${yodaCmd} --batch ${targets.length}${att} --delay ${state.delayMs}ms`;
+    document.getElementById("console-cmd").textContent = `$ yoda --mode ${cfg.mode}${state.bccMode?" --bcc":""}${obfCmd}${obfSubjectCmd}${codeCmd}${templateCmd} --batch ${targets.length}${att} --delay ${state.delayMs}ms`;
     document.getElementById("cursor").style.display="block";
     if(window.innerWidth<768)document.getElementById("right-panel").scrollIntoView({behavior:"smooth"});
     startPolling();
@@ -2079,7 +1862,6 @@ function showDoneBar(sent,failed,total){
     {l:"OBFUSCATION CORPS",v:state.obfuscate && !state.bccMode ? state.obfuscationMode : "désactivée",c:state.obfuscate && !state.bccMode ? "var(--purple)" : "var(--muted)"},
     {l:"OBFUSCATION SUJET",v:state.obfuscateSubject && !state.bccMode ? "activée" : "désactivée",c:state.obfuscateSubject && !state.bccMode ? "var(--pink)" : "var(--muted)"},
     {l:"CODE UNIQUE",v:state.addUniqueCode && !state.bccMode ? state.codePrefix : "désactivé",c:state.addUniqueCode && !state.bccMode ? "var(--gold)" : "var(--muted)"},
-    {l:"YODA SMTP",v:state.useYodaSmtp && state.yodaSelected ? `#${state.yodaSelected.id}` : "désactivé",c:state.useYodaSmtp && state.yodaSelected ? "var(--cyan)" : "var(--muted)"},
     {l:"ENVOYÉS",v:sent,c:"var(--green)"},
     {l:"ÉCHECS",v:failed,c:failed>0?"var(--red)":"var(--muted)"},
     {l:"TOTAL",v:total,c:"var(--dim)"},
@@ -2105,7 +1887,7 @@ function clearLogs(){
 
 // ══════════════ INIT ══════════════
 function appInit(){
-  switchTab("profiles"); updateStartBtn(); updateDelayLabel(); loadProfiles(); loadPool(); loadHistory(); loadTemplateConfig(); loadTemplates(); loadYodaAccounts();
+  switchTab("profiles"); updateStartBtn(); updateDelayLabel(); loadProfiles(); loadPool(); loadHistory(); loadTemplateConfig(); loadTemplates();
   (async()=>{
     try{
       const r=await api("/api/queue/status?since=0"); const data=await r.json();
